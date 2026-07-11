@@ -177,6 +177,61 @@ class EventoCheckin {
   }
 }
 
+/// Conflito criado no servidor quando uma alteração offline usa dados que já
+/// foram modificados ou removidos por outro aparelho.
+class ConflitoSincronizacao {
+  final String id;
+  final String tipo;
+  final String titulo;
+  final String descricao;
+  final String status;
+  final String? convidadoId;
+  final String? mesaId;
+  final String? eventoCheckinId;
+  final String? usuarioCheckinNome;
+  final String? usuarioAlteracaoMesaNome;
+  final Map<String, dynamic> dados;
+  final DateTime criadoEm;
+
+  ConflitoSincronizacao({
+    required this.id,
+    required this.tipo,
+    required this.titulo,
+    required this.descricao,
+    required this.status,
+    this.convidadoId,
+    this.mesaId,
+    this.eventoCheckinId,
+    this.usuarioCheckinNome,
+    this.usuarioAlteracaoMesaNome,
+    required this.dados,
+    required this.criadoEm,
+  });
+
+  factory ConflitoSincronizacao.fromMap(Map<String, dynamic> map) {
+    final dadosBrutos = map['dados'];
+
+    return ConflitoSincronizacao(
+      id: map['id']?.toString() ?? '',
+      tipo: map['tipo']?.toString() ?? '',
+      titulo: map['titulo']?.toString() ?? 'Conflito de sincronização',
+      descricao: map['descricao']?.toString() ?? '',
+      status: map['status']?.toString() ?? 'pendente',
+      convidadoId: map['convidado_id']?.toString(),
+      mesaId: map['mesa_id']?.toString(),
+      eventoCheckinId: map['evento_checkin_id']?.toString(),
+      usuarioCheckinNome: map['usuario_checkin_nome']?.toString(),
+      usuarioAlteracaoMesaNome: map['usuario_alteracao_mesa_nome']?.toString(),
+      dados: dadosBrutos is Map
+          ? Map<String, dynamic>.from(dadosBrutos)
+          : <String, dynamic>{},
+      criadoEm:
+          DateTime.tryParse(map['created_at']?.toString() ?? '')?.toLocal() ??
+          DateTime.now(),
+    );
+  }
+}
+
 int _converterInteiro(dynamic valor) {
   if (valor is int) {
     return valor;

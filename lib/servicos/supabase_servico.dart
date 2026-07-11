@@ -9,6 +9,7 @@ import '../banco/banco_local.dart';
 import '../modelos/modelos.dart';
 import 'dispositivo_servico.dart';
 import 'sessao_servico.dart';
+import 'sincronizacao_automatica_servico.dart';
 
 /// Serviço principal de dados do aplicativo.
 ///
@@ -85,6 +86,8 @@ class SupabaseServico {
         payload: payload,
       );
     });
+
+    _agendarSincronizacaoDepoisDaGravacao();
   }
 
   /// Edita uma mesa no banco local.
@@ -128,6 +131,8 @@ class SupabaseServico {
         payload: payload,
       );
     });
+
+    _agendarSincronizacaoDepoisDaGravacao();
   }
 
   /// Exclui uma mesa de forma lógica.
@@ -207,6 +212,8 @@ class SupabaseServico {
         );
       }
     });
+
+    _agendarSincronizacaoDepoisDaGravacao();
   }
 
   // ============================================================
@@ -274,6 +281,8 @@ class SupabaseServico {
         payload: payload,
       );
     });
+
+    _agendarSincronizacaoDepoisDaGravacao();
   }
 
   /// Edita um convidado no banco local.
@@ -318,6 +327,8 @@ class SupabaseServico {
         payload: payload,
       );
     });
+
+    _agendarSincronizacaoDepoisDaGravacao();
   }
 
   /// Exclui um convidado de forma lógica.
@@ -359,6 +370,8 @@ class SupabaseServico {
         payload: payload,
       );
     });
+
+    _agendarSincronizacaoDepoisDaGravacao();
   }
 
   // ============================================================
@@ -414,6 +427,58 @@ class SupabaseServico {
         );
       }).toList();
     });
+  }
+
+  // ============================================================
+  // CONFLITOS DE SINCRONIZAÇÃO — LEITURA E RESOLUÇÃO ONLINE
+  // ============================================================
+
+  /// Retorna os conflitos pendentes criados pelo Supabase.
+  ///
+  /// Esses conflitos surgem quando uma ação offline foi feita usando uma mesa
+  /// que já havia sido removida ou alterada por outro aparelho.
+  Stream<List<ConflitoSincronizacao>> listarConflitosPendentes() {
+    return _supabase
+        .from('conflitos_sincronizacao')
+        .stream(primaryKey: ['id'])
+        .eq('status', 'pendente')
+        .order('created_at', ascending: false)
+        .map((dados) {
+          return dados
+              .map(
+                (registro) => ConflitoSincronizacao.fromMap(
+                  Map<String, dynamic>.from(registro),
+                ),
+              )
+              .toList();
+        });
+  }
+
+  /// Resolve um conflito envolvendo uma mesa usada durante um check-in.
+  ///
+  /// Valores aceitos em [resolucao]:
+  ///
+  /// restaurar_mesa
+  /// manter_sem_mesa
+  /// mover_para_outra_mesa
+  Future<void> resolverConflitoMesaCheckin({
+    required String conflitoId,
+    required String resolucao,
+    String? novaMesaId,
+  }) async {
+    final usuarioId = _obterUsuarioAtualId();
+
+    await _supabase.rpc(
+      'resolver_conflito_mesa_checkin',
+      params: {
+        'p_conflito_id': conflitoId,
+        'p_usuario_id': usuarioId,
+        'p_resolucao': resolucao,
+        'p_nova_mesa_id': novaMesaId,
+      },
+    );
+
+    SincronizacaoAutomaticaServico.instance.sincronizarAgora();
   }
 
   // ============================================================
@@ -473,6 +538,13 @@ class SupabaseServico {
       throw StateError('O convidado não foi encontrado no banco local.');
     }
 
+    MesaLocalRegistro? mesaContexto;
+    final mesaContextoId = convidadoAtual.mesaId;
+
+    if (mesaContextoId != null && mesaContextoId.isNotEmpty) {
+      mesaContexto = await _buscarMesaLocal(mesaContextoId);
+    }
+
     final agora = DateTime.now().toUtc();
     final eventoId = _uuid.v4();
 
@@ -494,6 +566,9 @@ class SupabaseServico {
       'data_dispositivo': agora.toIso8601String(),
       'sequencia_dispositivo': sequencia,
       'dispositivo_id': dispositivoId,
+      'mesa_id_contexto': mesaContextoId,
+      'mesa_numero_contexto': mesaContexto?.numero,
+      'mesa_detalhe_contexto': mesaContexto?.detalhe,
       'observacao': null,
       'created_at': agora.toIso8601String(),
     };
@@ -535,6 +610,8 @@ class SupabaseServico {
         payload: payloadEvento,
       );
     });
+
+    _agendarSincronizacaoDepoisDaGravacao();
   }
 
   // ============================================================
@@ -655,6 +732,14 @@ class SupabaseServico {
             status: const Value('pendente'),
           ),
         );
+  }
+
+  /// Agenda a sincronização somente depois que a transação local terminou.
+  ///
+  /// Iniciar a sincronização enquanto o SQLite ainda está gravando a alteração
+  /// pode fazer o sincronizador aguardar a própria transação e ficar preso.
+  void _agendarSincronizacaoDepoisDaGravacao() {
+    SincronizacaoAutomaticaServico.instance.agendar();
   }
 
   String? _normalizarTextoOpcional(String? valor) {

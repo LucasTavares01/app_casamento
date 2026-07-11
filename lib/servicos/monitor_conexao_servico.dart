@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 
-import 'sincronizacao_servico.dart';
+import 'sincronizacao_automatica_servico.dart';
 
 /// Observa mudanças na rede do aparelho.
 ///
@@ -44,7 +44,7 @@ class MonitorConexaoServico {
     _estavaSemRede = estaSemRede;
 
     if (internetVoltou) {
-      unawaited(SincronizacaoServico.instance.sincronizarDadosIniciais());
+      SincronizacaoAutomaticaServico.instance.sincronizarAgora();
     }
   }
 

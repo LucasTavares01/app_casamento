@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 
+import '../modelos/modelos.dart';
 import '../servicos/sessao_servico.dart';
+import '../servicos/supabase_servico.dart';
 import '../servicos/sincronizacao_servico.dart';
 import 'aba_cadastro.dart';
 import 'aba_equipe.dart';
 import 'aba_mesas.dart';
 import 'aba_recepcao.dart';
 import 'porta_entrada.dart';
+import 'tela_conflitos.dart';
 
 class TelaPrincipal extends StatefulWidget {
   const TelaPrincipal({super.key});
@@ -17,6 +20,9 @@ class TelaPrincipal extends StatefulWidget {
 
 class _TelaPrincipalState extends State<TelaPrincipal> {
   final SincronizacaoServico _sincronizacao = SincronizacaoServico.instance;
+  final SupabaseServico _servico = SupabaseServico();
+
+  late final Stream<List<ConflitoSincronizacao>> _streamConflitos;
 
   int _abaSelecionada = 0;
 
@@ -30,6 +36,8 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
   @override
   void initState() {
     super.initState();
+
+    _streamConflitos = _servico.listarConflitosPendentes();
 
     _sincronizacao.addListener(_atualizarEstadoSincronizacao);
 
@@ -69,6 +77,68 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
         context,
       ).showSnackBar(SnackBar(content: Text(resultado.mensagem)));
     }
+  }
+
+  Future<void> _abrirConflitos() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const TelaConflitos()),
+    );
+  }
+
+  Widget _construirBotaoConflitos() {
+    return StreamBuilder<List<ConflitoSincronizacao>>(
+      stream: _streamConflitos,
+      builder: (context, snapshot) {
+        final quantidade = snapshot.data?.length ?? 0;
+
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            IconButton(
+              tooltip: quantidade == 0
+                  ? 'Nenhum conflito pendente'
+                  : '$quantidade conflito(s) pendente(s)',
+              onPressed: _abrirConflitos,
+              icon: Icon(
+                quantidade == 0
+                    ? Icons.verified_outlined
+                    : Icons.warning_amber_rounded,
+              ),
+            ),
+            if (quantidade > 0)
+              Positioned(
+                right: 4,
+                top: 4,
+                child: Container(
+                  constraints: const BoxConstraints(
+                    minWidth: 18,
+                    minHeight: 18,
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 1,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.red,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white, width: 1.5),
+                  ),
+                  child: Text(
+                    quantidade > 99 ? '99+' : quantidade.toString(),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _sair() async {
@@ -246,6 +316,7 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
           ],
         ),
         actions: [
+          _construirBotaoConflitos(),
           IconButton(
             tooltip: 'Sincronizar agora',
             onPressed: _sincronizacao.emAndamento ? null : _sincronizarAgora,

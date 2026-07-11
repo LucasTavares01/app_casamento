@@ -3,7 +3,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'servicos/dispositivo_servico.dart';
 import 'servicos/monitor_conexao_servico.dart';
+import 'servicos/realtime_servico.dart';
 import 'servicos/sessao_servico.dart';
+import 'servicos/sincronizacao_automatica_servico.dart';
 import 'telas/porta_entrada.dart';
 
 Future<void> main() async {
@@ -16,16 +18,40 @@ Future<void> main() async {
   );
 
   await SessaoServico.instance.inicializar();
-
   await DispositivoServico.instance.inicializar();
-
   await MonitorConexaoServico.instance.inicializar();
+  await RealtimeServico.instance.inicializar();
 
   runApp(const MeuAppCasamento());
 }
 
-class MeuAppCasamento extends StatelessWidget {
+class MeuAppCasamento extends StatefulWidget {
   const MeuAppCasamento({super.key});
+
+  @override
+  State<MeuAppCasamento> createState() => _MeuAppCasamentoState();
+}
+
+class _MeuAppCasamentoState extends State<MeuAppCasamento>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      SincronizacaoAutomaticaServico.instance.sincronizarAgora();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

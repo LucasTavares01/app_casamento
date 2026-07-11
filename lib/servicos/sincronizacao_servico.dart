@@ -66,6 +66,7 @@ class SincronizacaoServico extends ChangeNotifier {
   static const String _recursoSincronizacao = 'dados_servidor';
   static const int _tamanhoPagina = 1000;
   static const Duration _tempoLimitePorPagina = Duration(seconds: 30);
+  static const Duration _tempoLimiteVerificacaoConexao = Duration(seconds: 4);
 
   StatusSincronizacao _status = StatusSincronizacao.aguardando;
   String _mensagem = 'Aguardando sincronização.';
@@ -107,15 +108,9 @@ class SincronizacaoServico extends ChangeNotifier {
         'Verificando conexão...',
       );
 
-      final resultadosConexao = await _connectivity.checkConnectivity();
+      final semNenhumaRede = await _verificarSeEstaSemRede();
 
-      final semNenhumaRede =
-          resultadosConexao.isEmpty ||
-          resultadosConexao.every(
-            (resultado) => resultado == ConnectivityResult.none,
-          );
-
-      if (semNenhumaRede) {
+      if (semNenhumaRede == true) {
         const resultado = ResultadoSincronizacao(
           sucesso: false,
           semConexao: true,
@@ -129,9 +124,16 @@ class SincronizacaoServico extends ChangeNotifier {
         return resultado;
       }
 
-      await DispositivoServico.instance.obterOuCriarId();
-      await _registrarInicioSincronizacao();
+      _alterarStatus(
+        StatusSincronizacao.sincronizando,
+        'Conectando ao servidor...',
+      );
 
+      await DispositivoServico.instance.obterOuCriarId();
+
+      // O controle em memória (_sincronizando) já impede execuções paralelas.
+      // Não gravamos o marcador de início no SQLite aqui, porque esta escrita
+      // não é necessária para enviar os dados e não deve bloquear a conexão.
       _alterarStatus(
         StatusSincronizacao.sincronizando,
         'Enviando alterações pendentes...',
@@ -192,6 +194,12 @@ class SincronizacaoServico extends ChangeNotifier {
         await _salvarMensagens(mensagens, contextoPendencias);
 
         await _salvarEventos(eventos, contextoPendencias);
+
+        await _reconciliarMesas(mesas, contextoPendencias);
+
+        await _reconciliarEventos(eventos, contextoPendencias);
+
+        await _reconciliarConvidados(convidados, contextoPendencias);
       });
 
       final agora = DateTime.now().toUtc();
@@ -252,6 +260,35 @@ class SincronizacaoServico extends ChangeNotifier {
     }
   }
 
+  /// Verifica se o aparelho está explicitamente sem rede.
+  ///
+  /// O connectivity_plus é usado somente como uma indicação. Em alguns
+  /// aparelhos essa consulta pode demorar ou não responder. Nesse caso, o
+  /// aplicativo continua e tenta falar diretamente com o Supabase, evitando
+  /// ficar preso indefinidamente em "Verificando conexão...".
+  Future<bool?> _verificarSeEstaSemRede() async {
+    try {
+      final resultados = await _connectivity.checkConnectivity().timeout(
+        _tempoLimiteVerificacaoConexao,
+      );
+
+      return resultados.isEmpty ||
+          resultados.every((resultado) => resultado == ConnectivityResult.none);
+    } on TimeoutException {
+      debugPrint(
+        'A verificação de conectividade excedeu o tempo limite. '
+        'A sincronização tentará acessar o Supabase diretamente.',
+      );
+      return null;
+    } catch (erro) {
+      debugPrint(
+        'Não foi possível consultar o estado da rede: $erro. '
+        'A sincronização tentará acessar o Supabase diretamente.',
+      );
+      return null;
+    }
+  }
+
   /// Busca todas as linhas usando páginas de até 1.000 registros.
   Future<List<Map<String, dynamic>>> _buscarTodasAsLinhas(
     String nomeTabela,
@@ -294,40 +331,59 @@ class SincronizacaoServico extends ChangeNotifier {
 
     final chavesPendentes = <String>{};
     final convidadosComCheckinPendente = <String>{};
+    final mesasReferenciadasPorPendencias = <String>{};
 
     for (final operacao in operacoes) {
       chavesPendentes.add(
         _montarChavePendente(operacao.entidade, operacao.entidadeId),
       );
 
-      if (operacao.entidade == 'evento_checkin') {
-        try {
-          final payload = jsonDecode(operacao.payloadJson);
+      Map<String, dynamic>? payload;
 
-          if (payload is Map<String, dynamic>) {
-            final convidadoId = payload['convidado_id']?.toString();
+      try {
+        final valorDecodificado = jsonDecode(operacao.payloadJson);
 
-            if (convidadoId != null && convidadoId.isNotEmpty) {
-              convidadosComCheckinPendente.add(convidadoId);
-            }
-          } else if (payload is Map) {
-            final mapaConvertido = Map<String, dynamic>.from(payload);
-            final convidadoId = mapaConvertido['convidado_id']?.toString();
-
-            if (convidadoId != null && convidadoId.isNotEmpty) {
-              convidadosComCheckinPendente.add(convidadoId);
-            }
-          }
-        } catch (_) {
-          // Uma operação inválida continua na fila e não interrompe
-          // a sincronização dos outros dados.
+        if (valorDecodificado is Map) {
+          payload = Map<String, dynamic>.from(valorDecodificado);
         }
+      } catch (_) {
+        // A operação continua preservada na fila. Um JSON inválido não deve
+        // interromper a reconciliação dos outros registros.
+      }
+
+      if (operacao.entidade == 'convidado' && payload != null) {
+        final mesaId = payload['mesa_id']?.toString();
+
+        if (mesaId != null && mesaId.isNotEmpty) {
+          mesasReferenciadasPorPendencias.add(mesaId);
+        }
+      }
+
+      if (operacao.entidade == 'evento_checkin' && payload != null) {
+        final convidadoId = payload['convidado_id']?.toString();
+
+        if (convidadoId != null && convidadoId.isNotEmpty) {
+          convidadosComCheckinPendente.add(convidadoId);
+        }
+      }
+    }
+
+    for (final convidadoId in convidadosComCheckinPendente) {
+      final consulta = _banco.select(_banco.convidadosLocais)
+        ..where((tabela) => tabela.id.equals(convidadoId));
+
+      final convidado = await consulta.getSingleOrNull();
+      final mesaId = convidado?.mesaId;
+
+      if (mesaId != null && mesaId.isNotEmpty) {
+        mesasReferenciadasPorPendencias.add(mesaId);
       }
     }
 
     return _ContextoPendencias(
       chavesPendentes: chavesPendentes,
       convidadosComCheckinPendente: convidadosComCheckinPendente,
+      mesasReferenciadasPorPendencias: mesasReferenciadasPorPendencias,
     );
   }
 
@@ -553,20 +609,128 @@ class SincronizacaoServico extends ChangeNotifier {
     }
   }
 
-  Future<void> _registrarInicioSincronizacao() async {
-    final existente = await _buscarRegistroSincronizacao();
+  /// Remove do SQLite mesas que não existem mais como registros ativos no
+  /// Supabase. Mesas com alterações offline pendentes são preservadas.
+  Future<void> _reconciliarMesas(
+    List<Map<String, dynamic>> registrosServidor,
+    _ContextoPendencias pendencias,
+  ) async {
+    final idsAtivosServidor = _obterIdsAtivosServidor(registrosServidor);
 
-    await _banco
-        .into(_banco.sincronizacoesLocais)
-        .insertOnConflictUpdate(
-          SincronizacoesLocaisCompanion.insert(
-            recurso: _recursoSincronizacao,
-            ultimaSincronizacao: Value(existente?.ultimaSincronizacao),
-            cursorServidor: Value(existente?.cursorServidor),
-            emAndamento: const Value(true),
-            ultimoErro: const Value<String?>(null),
-          ),
-        );
+    final mesasLocais = await _banco.select(_banco.mesasLocais).get();
+
+    for (final mesa in mesasLocais) {
+      if (idsAtivosServidor.contains(mesa.id)) {
+        continue;
+      }
+
+      final possuiAlteracaoPendente = _possuiPendencia(
+        pendencias,
+        entidade: 'mesa',
+        entidadeId: mesa.id,
+      );
+
+      final possuiDependenciaPendente = pendencias
+          .mesasReferenciadasPorPendencias
+          .contains(mesa.id);
+
+      if (possuiAlteracaoPendente || possuiDependenciaPendente) {
+        continue;
+      }
+
+      await (_banco.update(
+        _banco.convidadosLocais,
+      )..where((tabela) => tabela.mesaId.equals(mesa.id))).write(
+        ConvidadosLocaisCompanion(
+          mesaId: const Value<String?>(null),
+          atualizadoEm: Value(DateTime.now().toUtc()),
+        ),
+      );
+
+      await (_banco.delete(
+        _banco.mesasLocais,
+      )..where((tabela) => tabela.id.equals(mesa.id))).go();
+    }
+  }
+
+  /// Remove do SQLite convidados que já não existem como registros ativos no
+  /// Supabase. Alterações locais e check-ins ainda pendentes são preservados.
+  Future<void> _reconciliarConvidados(
+    List<Map<String, dynamic>> registrosServidor,
+    _ContextoPendencias pendencias,
+  ) async {
+    final idsAtivosServidor = _obterIdsAtivosServidor(registrosServidor);
+
+    final convidadosLocais = await _banco.select(_banco.convidadosLocais).get();
+
+    for (final convidado in convidadosLocais) {
+      if (idsAtivosServidor.contains(convidado.id)) {
+        continue;
+      }
+
+      final possuiAlteracaoPendente = _possuiPendencia(
+        pendencias,
+        entidade: 'convidado',
+        entidadeId: convidado.id,
+      );
+
+      final possuiCheckinPendente = pendencias.convidadosComCheckinPendente
+          .contains(convidado.id);
+
+      if (possuiAlteracaoPendente || possuiCheckinPendente) {
+        continue;
+      }
+
+      await (_banco.delete(
+        _banco.eventosCheckinLocais,
+      )..where((tabela) => tabela.convidadoId.equals(convidado.id))).go();
+
+      await (_banco.delete(
+        _banco.convidadosLocais,
+      )..where((tabela) => tabela.id.equals(convidado.id))).go();
+    }
+  }
+
+  /// Remove eventos locais que não existem mais no servidor, exceto eventos
+  /// que ainda aguardam envio.
+  Future<void> _reconciliarEventos(
+    List<Map<String, dynamic>> registrosServidor,
+    _ContextoPendencias pendencias,
+  ) async {
+    final idsServidor = registrosServidor
+        .map((registro) => _lerTextoObrigatorio(registro['id']))
+        .where((id) => id.isNotEmpty)
+        .toSet();
+
+    final eventosLocais = await _banco
+        .select(_banco.eventosCheckinLocais)
+        .get();
+
+    for (final evento in eventosLocais) {
+      if (idsServidor.contains(evento.id)) {
+        continue;
+      }
+
+      if (_possuiPendencia(
+        pendencias,
+        entidade: 'evento_checkin',
+        entidadeId: evento.id,
+      )) {
+        continue;
+      }
+
+      await (_banco.delete(
+        _banco.eventosCheckinLocais,
+      )..where((tabela) => tabela.id.equals(evento.id))).go();
+    }
+  }
+
+  Set<String> _obterIdsAtivosServidor(List<Map<String, dynamic>> registros) {
+    return registros
+        .where((registro) => registro['deleted_at'] == null)
+        .map((registro) => _lerTextoObrigatorio(registro['id']))
+        .where((id) => id.isNotEmpty)
+        .toSet();
   }
 
   Future<void> _registrarFimSincronizacao(DateTime agora) async {
@@ -795,9 +959,11 @@ class SincronizacaoServico extends ChangeNotifier {
 class _ContextoPendencias {
   final Set<String> chavesPendentes;
   final Set<String> convidadosComCheckinPendente;
+  final Set<String> mesasReferenciadasPorPendencias;
 
   const _ContextoPendencias({
     required this.chavesPendentes,
     required this.convidadosComCheckinPendente,
+    required this.mesasReferenciadasPorPendencias,
   });
 }

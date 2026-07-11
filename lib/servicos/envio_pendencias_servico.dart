@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
@@ -34,6 +35,8 @@ class EnvioPendenciasServico {
 
   final BancoLocal _banco = bancoLocal;
   final SupabaseClient _supabase = Supabase.instance.client;
+
+  static const Duration _tempoLimiteRequisicao = Duration(seconds: 25);
 
   /// Envia todas as operações pendentes.
   ///
@@ -176,28 +179,38 @@ class EnvioPendenciasServico {
     required String tabela,
     required Map<String, dynamic> payload,
   }) async {
-    await _supabase.from(tabela).upsert(payload, onConflict: 'id');
+    await _supabase
+        .from(tabela)
+        .upsert(payload, onConflict: 'id')
+        .timeout(_tempoLimiteRequisicao);
   }
 
   /// Envia um evento utilizando a função criada no Supabase.
   Future<void> _enviarEventoCheckin(Map<String, dynamic> payload) async {
-    final resposta = await _supabase.rpc(
-      'registrar_evento_checkin',
-      params: {
-        'p_id': _lerTextoObrigatorio(payload['id']),
-        'p_convidado_id': _lerTextoObrigatorio(payload['convidado_id']),
-        'p_usuario_id': _lerTextoObrigatorio(payload['usuario_id']),
-        'p_tipo_acao': _lerTextoObrigatorio(payload['tipo_acao']),
-        'p_estado_resultante': _lerBooleano(payload['estado_resultante']),
-        'p_eventos_base': _lerListaDeTextos(payload['eventos_base']),
-        'p_data_dispositivo': _lerTextoObrigatorio(payload['data_dispositivo']),
-        'p_sequencia_dispositivo': _lerInteiro(
-          payload['sequencia_dispositivo'],
-        ),
-        'p_dispositivo_id': _lerTextoObrigatorio(payload['dispositivo_id']),
-        'p_observacao': payload['observacao'],
-      },
-    );
+    final resposta = await _supabase
+        .rpc(
+          'registrar_evento_checkin_v2',
+          params: {
+            'p_id': _lerTextoObrigatorio(payload['id']),
+            'p_convidado_id': _lerTextoObrigatorio(payload['convidado_id']),
+            'p_usuario_id': _lerTextoObrigatorio(payload['usuario_id']),
+            'p_tipo_acao': _lerTextoObrigatorio(payload['tipo_acao']),
+            'p_estado_resultante': _lerBooleano(payload['estado_resultante']),
+            'p_eventos_base': _lerListaDeTextos(payload['eventos_base']),
+            'p_data_dispositivo': _lerTextoObrigatorio(
+              payload['data_dispositivo'],
+            ),
+            'p_sequencia_dispositivo': _lerInteiro(
+              payload['sequencia_dispositivo'],
+            ),
+            'p_dispositivo_id': _lerTextoObrigatorio(payload['dispositivo_id']),
+            'p_mesa_id_contexto': payload['mesa_id_contexto'],
+            'p_mesa_numero_contexto': payload['mesa_numero_contexto'],
+            'p_mesa_detalhe_contexto': payload['mesa_detalhe_contexto'],
+            'p_observacao': payload['observacao'],
+          },
+        )
+        .timeout(_tempoLimiteRequisicao);
 
     final respostaConvertida = _converterRespostaRpc(resposta);
 

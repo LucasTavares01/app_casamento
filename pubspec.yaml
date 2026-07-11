@@ -2,7 +2,7 @@ name: app_casamento
 description: "Aplicativo de gestão e check-in de casamento com funcionamento online e offline."
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.0.3+4
 
 environment:
   sdk: ^3.11.5
