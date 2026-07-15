@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../modelos/modelos.dart';
+import '../servicos/relatorio_excel_servico.dart';
 import '../servicos/sessao_servico.dart';
 import '../servicos/supabase_servico.dart';
 import '../servicos/sincronizacao_servico.dart';
@@ -18,13 +21,24 @@ class TelaPrincipal extends StatefulWidget {
   State<TelaPrincipal> createState() => _TelaPrincipalState();
 }
 
-class _TelaPrincipalState extends State<TelaPrincipal> {
+class _TelaPrincipalState extends State<TelaPrincipal>
+    with WidgetsBindingObserver {
   final SincronizacaoServico _sincronizacao = SincronizacaoServico.instance;
   final SupabaseServico _servico = SupabaseServico();
 
   late final Stream<List<ConflitoSincronizacao>> _streamConflitos;
 
+  static const Duration _tempoExibicaoStatusSincronizacao = Duration(
+    seconds: 4,
+  );
+
+  Timer? _temporizadorOcultarSincronizacao;
+  StreamSubscription<String>? _assinaturaSessaoRevogada;
+  bool _tratandoSessaoRevogada = false;
+
   int _abaSelecionada = 0;
+  bool _mostrarBarraSincronizacao = false;
+  bool _gerandoRelatorio = false;
 
   final List<Widget> _telas = [
     const AbaRecepcao(),
@@ -39,6 +53,10 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
 
     _streamConflitos = _servico.listarConflitosPendentes();
 
+    WidgetsBinding.instance.addObserver(this);
+    _assinaturaSessaoRevogada = SessaoServico.instance.sessoesRevogadas.listen(
+      _tratarSessaoRevogada,
+    );
     _sincronizacao.addListener(_atualizarEstadoSincronizacao);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -48,9 +66,53 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _assinaturaSessaoRevogada?.cancel();
+    _temporizadorOcultarSincronizacao?.cancel();
     _sincronizacao.removeListener(_atualizarEstadoSincronizacao);
 
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      SessaoServico.instance.renovarSessao();
+    }
+  }
+
+  Future<void> _tratarSessaoRevogada(String mensagem) async {
+    if (!mounted || _tratandoSessaoRevogada) {
+      return;
+    }
+
+    _tratandoSessaoRevogada = true;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Sessão encerrada'),
+          content: Text(mensagem),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Entendi'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => const TelaPortaDeEntrada()),
+      (route) => false,
+    );
   }
 
   void _atualizarEstadoSincronizacao() {
@@ -58,7 +120,35 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
       return;
     }
 
-    setState(() {});
+    _temporizadorOcultarSincronizacao?.cancel();
+
+    final status = _sincronizacao.status;
+    final estaExecutando =
+        status == StatusSincronizacao.verificandoConexao ||
+        status == StatusSincronizacao.sincronizando;
+    final terminou =
+        status == StatusSincronizacao.concluida ||
+        status == StatusSincronizacao.offline ||
+        status == StatusSincronizacao.erro;
+
+    setState(() {
+      _mostrarBarraSincronizacao = estaExecutando || terminou;
+    });
+
+    if (terminou) {
+      _temporizadorOcultarSincronizacao = Timer(
+        _tempoExibicaoStatusSincronizacao,
+        () {
+          if (!mounted) {
+            return;
+          }
+
+          setState(() {
+            _mostrarBarraSincronizacao = false;
+          });
+        },
+      );
+    }
   }
 
   Future<void> _sincronizarAgora() async {
@@ -76,6 +166,62 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(resultado.mensagem)));
+    }
+  }
+
+  Future<void> _gerarRelatorioExcel() async {
+    if (_gerandoRelatorio || _sincronizacao.emAndamento) {
+      return;
+    }
+
+    FocusManager.instance.primaryFocus?.unfocus();
+
+    setState(() {
+      _gerandoRelatorio = true;
+    });
+
+    try {
+      final resultadoSincronizacao = await _sincronizacao
+          .sincronizarDadosIniciais();
+
+      final relatorio = await RelatorioExcelServico.instance
+          .gerarECompartilhar();
+
+      if (!mounted) {
+        return;
+      }
+
+      final complemento = resultadoSincronizacao.sucesso
+          ? ''
+          : ' O arquivo foi criado com os dados disponíveis neste celular.';
+
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              'Relatório Excel gerado: ${relatorio.presentes} presentes, '
+              '${relatorio.ausentes} ausentes e '
+              '${relatorio.conflitos} conflito(s).$complemento',
+            ),
+          ),
+        );
+    } catch (erro) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(content: Text('Não foi possível gerar o relatório: $erro')),
+        );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _gerandoRelatorio = false;
+        });
+      }
     }
   }
 
@@ -170,7 +316,11 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
       return;
     }
 
-    SessaoServico.instance.encerrarSessao();
+    await SessaoServico.instance.encerrarSessao();
+
+    if (!mounted) {
+      return;
+    }
 
     Navigator.pushReplacement(
       context,
@@ -331,14 +481,38 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
       ),
       body: Column(
         children: [
-          _construirBarraSincronizacao(),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeInOut,
+            child: _mostrarBarraSincronizacao
+                ? _construirBarraSincronizacao()
+                : const SizedBox.shrink(),
+          ),
           Expanded(child: _telas[_abaSelecionada]),
         ],
       ),
+      floatingActionButton: _abaSelecionada == 0
+          ? FloatingActionButton.extended(
+              heroTag: 'gerar-relatorio-excel',
+              onPressed: _gerandoRelatorio || _sincronizacao.emAndamento
+                  ? null
+                  : _gerarRelatorioExcel,
+              icon: _gerandoRelatorio
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.table_view_outlined),
+              label: Text(_gerandoRelatorio ? 'Gerando...' : 'Relatório Excel'),
+            )
+          : null,
       bottomNavigationBar: BottomNavigationBar(
         type: BottomNavigationBarType.fixed,
         currentIndex: _abaSelecionada,
         onTap: (index) {
+          FocusManager.instance.primaryFocus?.unfocus();
+
           setState(() {
             _abaSelecionada = index;
           });

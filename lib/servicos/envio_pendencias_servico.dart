@@ -145,11 +145,19 @@ class EnvioPendenciasServico {
 
     switch (operacao.entidade) {
       case 'mesa':
-        await _enviarRegistroComUpsert(tabela: 'mesas', payload: payload);
+        await _enviarEntidadeComConflito(
+          entidade: 'mesa',
+          operacao: operacao,
+          payload: payload,
+        );
         return;
 
       case 'convidado':
-        await _enviarRegistroComUpsert(tabela: 'convidados', payload: payload);
+        await _enviarEntidadeComConflito(
+          entidade: 'convidado',
+          operacao: operacao,
+          payload: payload,
+        );
         return;
 
       case 'staff':
@@ -169,6 +177,24 @@ class EnvioPendenciasServico {
           'Entidade desconhecida na fila: ${operacao.entidade}.',
         );
     }
+  }
+
+  Future<void> _enviarEntidadeComConflito({
+    required String entidade,
+    required OperacaoPendenteLocalRegistro operacao,
+    required Map<String, dynamic> payload,
+  }) async {
+    await _supabase
+        .rpc(
+          'aplicar_operacao_entidade_v1',
+          params: {
+            'p_operacao_id': operacao.id,
+            'p_entidade': entidade,
+            'p_tipo_operacao': operacao.tipoOperacao,
+            'p_payload': payload,
+          },
+        )
+        .timeout(_tempoLimiteRequisicao);
   }
 
   /// Insere ou atualiza o registro usando o ID criado no celular.

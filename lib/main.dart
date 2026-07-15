@@ -13,7 +13,7 @@ Future<void> main() async {
 
   await Supabase.initialize(
     url: 'https://rtidfwtjjpgwlgljfsyd.supabase.co',
-    anonKey:
+    publishableKey:
         'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0aWRmd3RqanBnd2xnbGpmc3lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyNDA3OTIsImV4cCI6MjA5NDgxNjc5Mn0.ykA0xDpKNGDgL08pN5k4P3idDsA8fiXsLnXmar-y0Tw',
   );
 

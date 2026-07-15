@@ -21,6 +21,9 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
   String _textoBusca = '';
   String? _mesaFiltroId;
 
+  final TextEditingController _controladorBusca = TextEditingController();
+  final FocusNode _focoBusca = FocusNode();
+
   final List<Color> _coresPasteis = [
     Colors.pink.shade100,
     Colors.blue.shade100,
@@ -44,6 +47,18 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
     _streamConvidados = _servico.listarConvidados();
     _streamUsuarios = _servico.listarUsuariosApp();
     _streamEventos = _servico.listarEventosCheckin();
+  }
+
+  @override
+  void dispose() {
+    _controladorBusca.dispose();
+    _focoBusca.dispose();
+    super.dispose();
+  }
+
+  void _removerFocoBusca() {
+    _focoBusca.unfocus();
+    FocusManager.instance.primaryFocus?.unfocus();
   }
 
   Future<void> _confirmarChegada(Convidado convidado) async {
@@ -831,6 +846,11 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                         Padding(
                           padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
                           child: TextField(
+                            controller: _controladorBusca,
+                            focusNode: _focoBusca,
+                            autofocus: false,
+                            textInputAction: TextInputAction.search,
+                            onTapOutside: (_) => _removerFocoBusca(),
                             decoration: InputDecoration(
                               hintText: 'Buscar convidado por nome...',
                               prefixIcon: const Icon(Icons.search),
@@ -866,6 +886,7 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                               ),
                             ),
                             isExpanded: true,
+                            onTap: _removerFocoBusca,
                             items: [
                               const DropdownMenuItem<String?>(
                                 value: null,
@@ -882,6 +903,8 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                               }),
                             ],
                             onChanged: (valor) {
+                              _removerFocoBusca();
+
                               setState(() {
                                 _mesaFiltroId = valor;
                               });
@@ -894,6 +917,8 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                                   child: Text('Nenhum convidado encontrado.'),
                                 )
                               : ListView.builder(
+                                  keyboardDismissBehavior:
+                                      ScrollViewKeyboardDismissBehavior.onDrag,
                                   itemCount: convidadosFiltrados.length,
                                   padding: const EdgeInsets.only(bottom: 12),
                                   itemBuilder: (context, index) {

@@ -107,6 +107,7 @@ class SupabaseServico {
       'numero': numero,
       'detalhe': detalheNormalizado,
       'created_at': mesaAtual.criadoEm.toUtc().toIso8601String(),
+      'base_updated_at': mesaAtual.atualizadoEm.toUtc().toIso8601String(),
       'updated_at': agora.toIso8601String(),
       'deleted_at': null,
       'modificado_por_usuario_id': usuarioId,
@@ -161,6 +162,7 @@ class SupabaseServico {
       'numero': mesaAtual.numero,
       'detalhe': mesaAtual.detalhe,
       'created_at': mesaAtual.criadoEm.toUtc().toIso8601String(),
+      'base_updated_at': mesaAtual.atualizadoEm.toUtc().toIso8601String(),
       'updated_at': agora.toIso8601String(),
       'deleted_at': agora.toIso8601String(),
       'modificado_por_usuario_id': usuarioId,
@@ -199,6 +201,7 @@ class SupabaseServico {
           'mesa_id': null,
           'chegou': convidado.chegou,
           'created_at': convidado.criadoEm.toUtc().toIso8601String(),
+          'base_updated_at': convidado.atualizadoEm.toUtc().toIso8601String(),
           'updated_at': agora.toIso8601String(),
           'deleted_at': null,
           'modificado_por_usuario_id': usuarioId,
@@ -303,6 +306,7 @@ class SupabaseServico {
       'mesa_id': mesaId,
       'chegou': convidadoAtual.chegou,
       'created_at': convidadoAtual.criadoEm.toUtc().toIso8601String(),
+      'base_updated_at': convidadoAtual.atualizadoEm.toUtc().toIso8601String(),
       'updated_at': agora.toIso8601String(),
       'deleted_at': null,
       'modificado_por_usuario_id': usuarioId,
@@ -348,6 +352,7 @@ class SupabaseServico {
       'mesa_id': convidadoAtual.mesaId,
       'chegou': convidadoAtual.chegou,
       'created_at': convidadoAtual.criadoEm.toUtc().toIso8601String(),
+      'base_updated_at': convidadoAtual.atualizadoEm.toUtc().toIso8601String(),
       'updated_at': agora.toIso8601String(),
       'deleted_at': agora.toIso8601String(),
       'modificado_por_usuario_id': usuarioId,
@@ -478,6 +483,21 @@ class SupabaseServico {
       },
     );
 
+    SincronizacaoAutomaticaServico.instance.sincronizarAgora();
+  }
+
+  Future<void> resolverConflitoGenerico({
+    required String conflitoId,
+    required String resolucao,
+  }) async {
+    await _supabase.rpc(
+      'resolver_conflito_generico_v1',
+      params: {
+        'p_conflito_id': conflitoId,
+        'p_usuario_id': _obterUsuarioAtualId(),
+        'p_resolucao': resolucao,
+      },
+    );
     SincronizacaoAutomaticaServico.instance.sincronizarAgora();
   }
 

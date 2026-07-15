@@ -195,6 +195,32 @@ class _TelaConflitosState extends State<TelaConflitos> {
     }
   }
 
+  Future<void> _resolverGenerico(
+    ConflitoSincronizacao conflito,
+    String resolucao,
+  ) async {
+    setState(() => _conflitosEmResolucao.add(conflito.id));
+    try {
+      await _servico.resolverConflitoGenerico(
+        conflitoId: conflito.id,
+        resolucao: resolucao,
+      );
+    } catch (erro) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Não foi possível resolver: $erro')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _conflitosEmResolucao.remove(conflito.id));
+    }
+  }
+
+  bool _ehConflitoMesa(ConflitoSincronizacao conflito) {
+    return conflito.tipo.contains('mesa') &&
+        conflito.tipo != 'mesa_alteracao_concorrente';
+  }
+
   String _formatarDataHora(DateTime data) {
     final dia = data.day.toString().padLeft(2, '0');
     final mes = data.month.toString().padLeft(2, '0');
@@ -212,8 +238,8 @@ class _TelaConflitosState extends State<TelaConflitos> {
     final resolvendo = _conflitosEmResolucao.contains(conflito.id);
     final nomeConvidado =
         conflito.dados['convidado_nome']?.toString() ?? 'Convidado';
-    final numeroMesa =
-        conflito.dados['mesa_numero_contexto']?.toString() ?? '?';
+    final numeroMesa = conflito.dados['mesa_numero_contexto']?.toString();
+    final ehMesa = _ehConflitoMesa(conflito);
 
     return Card(
       margin: const EdgeInsets.fromLTRB(12, 8, 12, 8),
@@ -273,11 +299,13 @@ class _TelaConflitosState extends State<TelaConflitos> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  'Mesa usada no aparelho offline: $numeroMesa',
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 10),
+                if (ehMesa && numeroMesa != null) ...[
+                  Text(
+                    'Mesa usada no aparelho offline: $numeroMesa',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 10),
+                ],
                 Text(conflito.descricao),
                 if (conflito.usuarioCheckinNome != null) ...[
                   const SizedBox(height: 8),
@@ -292,7 +320,7 @@ class _TelaConflitosState extends State<TelaConflitos> {
                 const SizedBox(height: 16),
                 if (resolvendo)
                   const Center(child: CircularProgressIndicator())
-                else
+                else if (ehMesa)
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
@@ -314,6 +342,37 @@ class _TelaConflitosState extends State<TelaConflitos> {
                         ),
                         icon: const Icon(Icons.swap_horiz),
                         label: const Text('Escolher outra mesa'),
+                      ),
+                    ],
+                  )
+                else
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: () => _resolverGenerico(
+                          conflito,
+                          conflito.tipo == 'checkin_convidado_excluido'
+                              ? 'restaurar_aplicar_local'
+                              : 'aplicar_local',
+                        ),
+                        icon: const Icon(Icons.phone_android),
+                        label: Text(
+                          conflito.tipo == 'checkin_convidado_excluido'
+                              ? 'Restaurar e manter check-in'
+                              : 'Usar alteração deste celular',
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: () =>
+                            _resolverGenerico(conflito, 'manter_servidor'),
+                        icon: const Icon(Icons.cloud_done_outlined),
+                        label: Text(
+                          conflito.tipo == 'checkin_convidado_excluido'
+                              ? 'Manter exclusão'
+                              : 'Manter versão da nuvem',
+                        ),
                       ),
                     ],
                   ),

@@ -109,7 +109,7 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada> {
       if (!loginValido) {
         setState(() {
           _validandoLogin = false;
-          _erro = 'Senha incorreta para o usuário selecionado.';
+          _erro = _sessaoServico.ultimoErroLogin ?? 'Não foi possível entrar.';
         });
         return;
       }

@@ -10,6 +10,7 @@ import '../banco/banco_instancia.dart';
 import '../banco/banco_local.dart';
 import 'dispositivo_servico.dart';
 import 'envio_pendencias_servico.dart';
+import 'sessao_servico.dart';
 
 enum StatusSincronizacao {
   aguardando,
@@ -131,6 +132,10 @@ class SincronizacaoServico extends ChangeNotifier {
 
       await DispositivoServico.instance.obterOuCriarId();
 
+      _alterarStatus(StatusSincronizacao.sincronizando, 'Validando sessão...');
+
+      await SessaoServico.instance.exigirSessaoAtivaParaSincronizar();
+
       // O controle em memória (_sincronizando) já impede execuções paralelas.
       // Não gravamos o marcador de início no SQLite aqui, porque esta escrita
       // não é necessária para enviar os dados e não deve bloquear a conexão.
@@ -242,6 +247,10 @@ class SincronizacaoServico extends ChangeNotifier {
       );
 
       return resultado;
+    } on SessaoInvalidaException catch (erro) {
+      return _tratarErro(erro, erro.mensagem);
+    } on ValidacaoSessaoIndisponivelException catch (erro) {
+      return _tratarErro(erro, erro.mensagem);
     } on TimeoutException catch (erro) {
       return _tratarErro(
         erro,
