@@ -16,12 +16,15 @@ class _AbaCadastroState extends State<AbaCadastro> {
 
   late final Stream<List<Mesa>> _streamMesas;
   late final Stream<List<Convidado>> _streamConvidados;
+  final TextEditingController _buscaConvidadosController =
+      TextEditingController();
 
   final Set<String> _mesasSelecionadas = <String>{};
   final Set<String> _convidadosSelecionados = <String>{};
 
   bool _excluindoMesas = false;
   bool _excluindoConvidados = false;
+  String _textoBuscaConvidados = '';
 
   bool get _modoSelecaoMesas => _mesasSelecionadas.isNotEmpty;
 
@@ -32,6 +35,12 @@ class _AbaCadastroState extends State<AbaCadastro> {
     super.initState();
     _streamMesas = _servico.listarMesas();
     _streamConvidados = _servico.listarConvidados();
+  }
+
+  @override
+  void dispose() {
+    _buscaConvidadosController.dispose();
+    super.dispose();
   }
 
   void _dialogMesa({Mesa? mesaEdit}) {
@@ -812,6 +821,12 @@ class _AbaCadastroState extends State<AbaCadastro> {
             }
 
             final convidados = snapshot.data!;
+            final termoBusca = _textoBuscaConvidados.trim().toLowerCase();
+            final convidadosFiltrados = termoBusca.isEmpty
+                ? convidados
+                : convidados.where((convidado) {
+                    return convidado.nome.toLowerCase().contains(termoBusca);
+                  }).toList();
 
             _removerSelecoesInexistentesConvidados(convidados);
 
@@ -828,20 +843,50 @@ class _AbaCadastroState extends State<AbaCadastro> {
                     ),
               body: Column(
                 children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                    child: TextField(
+                      controller: _buscaConvidadosController,
+                      enabled: !_excluindoConvidados,
+                      onChanged: (texto) {
+                        setState(() {
+                          _textoBuscaConvidados = texto;
+                        });
+                      },
+                      decoration: InputDecoration(
+                        labelText: 'Pesquisar convidado',
+                        hintText: 'Digite o nome do convidado',
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: _textoBuscaConvidados.isEmpty
+                            ? null
+                            : IconButton(
+                                tooltip: 'Limpar pesquisa',
+                                icon: const Icon(Icons.clear),
+                                onPressed: () {
+                                  _buscaConvidadosController.clear();
+                                  setState(() {
+                                    _textoBuscaConvidados = '';
+                                  });
+                                },
+                              ),
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
                   if (_modoSelecaoConvidados)
-                    _barraSelecaoConvidados(convidados),
+                    _barraSelecaoConvidados(convidadosFiltrados),
                   Expanded(
-                    child: convidados.isEmpty
+                    child: convidadosFiltrados.isEmpty
                         ? const Center(
-                            child: Text('Nenhum convidado cadastrado.'),
+                            child: Text('Nenhum convidado encontrado.'),
                           )
                         : ListView.separated(
-                            itemCount: convidados.length,
+                            itemCount: convidadosFiltrados.length,
                             separatorBuilder: (context, index) {
                               return const Divider(height: 1);
                             },
                             itemBuilder: (context, index) {
-                              final convidado = convidados[index];
+                              final convidado = convidadosFiltrados[index];
                               final selecionado = _convidadosSelecionados
                                   .contains(convidado.id);
 

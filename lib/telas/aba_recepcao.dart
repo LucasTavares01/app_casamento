@@ -2,6 +2,23 @@ import 'package:flutter/material.dart';
 
 import '../modelos/modelos.dart';
 import '../servicos/supabase_servico.dart';
+import 'tela_conflitos.dart';
+
+class _AlertaConvidadoSincronizacao {
+  final String id;
+  final String titulo;
+  final String mensagem;
+  final bool conflitoServidor;
+  final DateTime criadoEm;
+
+  const _AlertaConvidadoSincronizacao({
+    required this.id,
+    required this.titulo,
+    required this.mensagem,
+    required this.conflitoServidor,
+    required this.criadoEm,
+  });
+}
 
 class AbaRecepcao extends StatefulWidget {
   const AbaRecepcao({super.key});
@@ -17,6 +34,8 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
   late final Stream<List<Convidado>> _streamConvidados;
   late final Stream<List<UsuarioApp>> _streamUsuarios;
   late final Stream<List<EventoCheckin>> _streamEventos;
+  late final Stream<List<ConflitoSincronizacao>> _streamConflitos;
+  late final Stream<List<ErroSincronizacaoLocal>> _streamErrosSincronizacao;
 
   String _textoBusca = '';
   String? _mesaFiltroId;
@@ -47,6 +66,8 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
     _streamConvidados = _servico.listarConvidados();
     _streamUsuarios = _servico.listarUsuariosApp();
     _streamEventos = _servico.listarEventosCheckin();
+    _streamConflitos = _servico.listarConflitosPendentes();
+    _streamErrosSincronizacao = _servico.listarErrosSincronizacaoLocais();
   }
 
   @override
@@ -74,20 +95,6 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
       await _servico.removerChegada(convidado.id);
     } catch (erro) {
       _mostrarErro('Não foi possível remover a chegada: $erro');
-    }
-  }
-
-  Future<void> _resolverConflito({
-    required Convidado convidado,
-    required bool presente,
-  }) async {
-    try {
-      await _servico.resolverConflito(
-        convidadoId: convidado.id,
-        presente: presente,
-      );
-    } catch (erro) {
-      _mostrarErro('Não foi possível resolver o conflito: $erro');
     }
   }
 
@@ -154,44 +161,6 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                 'Remover',
                 style: TextStyle(color: Colors.white),
               ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _mostrarConfirmacaoResolucao({
-    required Convidado convidado,
-    required bool presente,
-  }) {
-    final estadoEscolhido = presente
-        ? 'confirmar que o convidado chegou'
-        : 'confirmar que o convidado não chegou';
-
-    showDialog<void>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Resolver conflito'),
-          content: Text(
-            'Deseja $estadoEscolhido?\n\n'
-            'As ações anteriores continuarão disponíveis no histórico.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-              },
-              child: const Text('Cancelar'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pop(context);
-
-                _resolverConflito(convidado: convidado, presente: presente);
-              },
-              child: const Text('Resolver'),
             ),
           ],
         );
@@ -369,17 +338,218 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
     return eventosAtuais;
   }
 
+  String _mensagemConflitoRecepcao(ConflitoSincronizacao conflito) {
+    if (conflito.ehAvisoMesaExcluidaRevisao) {
+      return 'A mesa onde este convidado estava foi excluída. '
+          'Toque aqui e selecione uma nova mesa.';
+    }
+
+    if (conflito.envolveMesaExcluida) {
+      return 'A mesa onde este convidado estava foi excluída. '
+          'Abra os conflitos para revisar o que aconteceu.';
+    }
+
+    final tipo = conflito.tipo.toLowerCase();
+    if (tipo.contains('convidado_alteracao_concorrente')) {
+      return 'Este convidado foi alterado por dois usuários. '
+          'Escolha qual mudança deve permanecer.';
+    }
+
+    if (tipo.contains('checkin')) {
+      return 'A presença deste convidado recebeu alterações diferentes. '
+          'Escolha qual mudança deve permanecer.';
+    }
+
+    if (tipo.contains('mesa')) {
+      return 'Existe um conflito envolvendo a mesa deste convidado.';
+    }
+
+    return 'Existe um conflito de sincronização neste convidado.';
+  }
+
+  Map<String, List<_AlertaConvidadoSincronizacao>> _montarAlertasPorConvidado({
+    required List<Convidado> convidados,
+    required List<ConflitoSincronizacao> conflitos,
+    required List<ErroSincronizacaoLocal> erros,
+  }) {
+    final alertas = <String, List<_AlertaConvidadoSincronizacao>>{};
+
+    void adicionar(String convidadoId, _AlertaConvidadoSincronizacao alerta) {
+      if (convidadoId.trim().isEmpty) return;
+      alertas.putIfAbsent(convidadoId, () => []).add(alerta);
+    }
+
+    for (final conflito in conflitos) {
+      final ids = <String>{...conflito.convidadosAfetadosIds};
+
+      if (conflito.envolveMesaExcluida && conflito.mesaId != null) {
+        ids.addAll(
+          convidados
+              .where((convidado) => convidado.mesaId == conflito.mesaId)
+              .map((convidado) => convidado.id),
+        );
+      }
+
+      for (final convidadoId in ids) {
+        adicionar(
+          convidadoId,
+          _AlertaConvidadoSincronizacao(
+            id: conflito.id,
+            titulo: conflito.envolveMesaExcluida
+                ? 'Mesa excluída'
+                : 'Conflito de sincronização',
+            mensagem: _mensagemConflitoRecepcao(conflito),
+            conflitoServidor: true,
+            criadoEm: conflito.criadoEm,
+          ),
+        );
+      }
+    }
+
+    for (final erro in erros) {
+      final ids = <String>{...erro.convidadosAfetadosIds};
+
+      if (erro.entidade == 'mesa') {
+        ids.addAll(
+          convidados
+              .where((convidado) => convidado.mesaId == erro.entidadeId)
+              .map((convidado) => convidado.id),
+        );
+      }
+
+      for (final convidadoId in ids) {
+        adicionar(
+          convidadoId,
+          _AlertaConvidadoSincronizacao(
+            id: erro.id,
+            titulo: 'Erro de sincronização',
+            mensagem:
+                'A última alteração deste convidado ainda não conseguiu ser '
+                'enviada. Toque no aviso vermelho do topo para ver o erro.',
+            conflitoServidor: false,
+            criadoEm: erro.criadoEm,
+          ),
+        );
+      }
+    }
+
+    for (final lista in alertas.values) {
+      lista.sort((a, b) => b.criadoEm.compareTo(a.criadoEm));
+    }
+
+    return alertas;
+  }
+
+  Future<void> _abrirConflitos(String? conflitoId) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => TelaConflitos(conflitoIdInicial: conflitoId),
+      ),
+    );
+  }
+
+  Widget _construirPainelAlertas(List<_AlertaConvidadoSincronizacao> alertas) {
+    if (alertas.isEmpty) return const SizedBox.shrink();
+
+    final alerta = alertas.first;
+    final quantidadeExtra = alertas.length - 1;
+
+    return Material(
+      color: Colors.red.shade50,
+      child: InkWell(
+        onTap: alerta.conflitoServidor
+            ? () => _abrirConflitos(alerta.id)
+            : null,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+          decoration: BoxDecoration(
+            border: Border(
+              top: BorderSide(color: Colors.red.shade200),
+              bottom: BorderSide(color: Colors.red.shade200),
+            ),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.red.shade700),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      alerta.titulo,
+                      style: TextStyle(
+                        color: Colors.red.shade800,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      alerta.mensagem,
+                      style: TextStyle(
+                        color: Colors.red.shade900,
+                        fontSize: 13,
+                      ),
+                    ),
+                    if (quantidadeExtra > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          '+ $quantidadeExtra outro(s) aviso(s) neste convidado',
+                          style: TextStyle(
+                            color: Colors.red.shade700,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              if (alerta.conflitoServidor)
+                const Padding(
+                  padding: EdgeInsets.only(left: 6, top: 8),
+                  child: Icon(Icons.chevron_right),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _construirCabecalhoCard({
     required Convidado convidado,
     required Mesa mesa,
+    required bool possuiAlerta,
   }) {
     final possuiMesa = mesa.id.isNotEmpty && mesa.numero >= 0;
+    final temAlerta = convidado.temConflito || possuiAlerta;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 8, 12),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
+          if (temAlerta) ...[
+            Container(
+              width: 34,
+              height: 34,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Colors.red.shade600,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.priority_high_rounded,
+                color: Colors.white,
+                size: 25,
+              ),
+            ),
+            const SizedBox(width: 9),
+          ],
           Expanded(
             child: Text(
               convidado.nome,
@@ -389,7 +559,7 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                 fontSize: 22,
                 fontWeight: FontWeight.bold,
                 height: 1.1,
-                color: convidado.chegou && !convidado.temConflito
+                color: convidado.chegou && !temAlerta
                     ? Colors.black54
                     : Colors.black87,
               ),
@@ -430,7 +600,7 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
             ),
           ),
           const SizedBox(width: 4),
-          if (convidado.temConflito)
+          if (temAlerta)
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 8),
               child: Icon(Icons.warning_amber, color: Colors.amber, size: 38),
@@ -571,122 +741,12 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
     );
   }
 
-  Widget _construirPainelConflito({
-    required Convidado convidado,
-    required List<EventoCheckin> eventosAtuais,
-    required List<EventoCheckin> eventosDoConvidado,
-    required Map<String, String> usuariosPorId,
-  }) {
-    final confirmacoes = eventosAtuais.where((evento) {
-      return evento.estadoResultante;
-    }).toList();
-
-    final remocoes = eventosAtuais.where((evento) {
-      return !evento.estadoResultante;
-    }).toList();
-
-    final nomesConfirmacoes = _nomesDosEventos(
-      eventos: confirmacoes,
-      usuariosPorId: usuariosPorId,
-    );
-
-    final nomesRemocoes = _nomesDosEventos(
-      eventos: remocoes,
-      usuariosPorId: usuariosPorId,
-    );
-
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.amber.shade50,
-        border: Border.all(color: Colors.amber.shade700),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.warning_amber, color: Colors.amber.shade900),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Conflito de check-in',
-                  style: TextStyle(
-                    color: Colors.amber.shade900,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-              ),
-              if (eventosDoConvidado.isNotEmpty)
-                TextButton.icon(
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                    minimumSize: const Size(0, 36),
-                  ),
-                  onPressed: () {
-                    _mostrarHistorico(
-                      convidado: convidado,
-                      eventos: eventosDoConvidado,
-                      usuariosPorId: usuariosPorId,
-                    );
-                  },
-                  icon: const Icon(Icons.history, size: 17),
-                  label: const Text(
-                    'Histórico',
-                    style: TextStyle(fontSize: 12),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text('Confirmaram: $nomesConfirmacoes'),
-          Text('Removeram: $nomesRemocoes'),
-          const SizedBox(height: 12),
-          const Text(
-            'Escolha a situação correta:',
-            style: TextStyle(fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              OutlinedButton.icon(
-                onPressed: () {
-                  _mostrarConfirmacaoResolucao(
-                    convidado: convidado,
-                    presente: false,
-                  );
-                },
-                icon: const Icon(Icons.person_off),
-                label: const Text('Não chegou'),
-              ),
-              ElevatedButton.icon(
-                onPressed: () {
-                  _mostrarConfirmacaoResolucao(
-                    convidado: convidado,
-                    presente: true,
-                  );
-                },
-                icon: const Icon(Icons.how_to_reg),
-                label: const Text('Chegou'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _construirCardConvidado({
     required Convidado convidado,
     required Mesa mesa,
     required List<EventoCheckin> todosEventos,
     required Map<String, String> usuariosPorId,
+    required List<_AlertaConvidadoSincronizacao> alertas,
   }) {
     var corFundo = Colors.white;
 
@@ -703,32 +763,38 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
       todosEventos: todosEventos,
     );
 
+    final temAlerta = convidado.temConflito || alertas.isNotEmpty;
+
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       color: corFundo,
-      elevation: convidado.temConflito
-          ? 5
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: temAlerta
+            ? BorderSide(color: Colors.red.shade600, width: 2.5)
+            : BorderSide.none,
+      ),
+      elevation: temAlerta
+          ? 6
           : convidado.chegou
           ? 1
           : 3,
       clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
-          _construirCabecalhoCard(convidado: convidado, mesa: mesa),
-          if (convidado.temConflito)
-            _construirPainelConflito(
-              convidado: convidado,
-              eventosAtuais: eventosAtuais,
-              eventosDoConvidado: eventosDoConvidado,
-              usuariosPorId: usuariosPorId,
-            )
-          else
-            _construirLinhaEstadoEHistorico(
-              convidado: convidado,
-              eventosAtuais: eventosAtuais,
-              eventosDoConvidado: eventosDoConvidado,
-              usuariosPorId: usuariosPorId,
-            ),
+          _construirCabecalhoCard(
+            convidado: convidado,
+            mesa: mesa,
+            possuiAlerta: alertas.isNotEmpty,
+          ),
+          if (alertas.isNotEmpty) _construirPainelAlertas(alertas),
+          _construirLinhaEstadoEHistorico(
+            convidado: convidado,
+            eventosAtuais: eventosAtuais,
+            eventosDoConvidado: eventosDoConvidado,
+            usuariosPorId: usuariosPorId,
+          ),
         ],
       ),
     );
@@ -803,143 +869,207 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                       return const Center(child: CircularProgressIndicator());
                     }
 
-                    final convidadosFiltrados = snapConvidados.data!.where((
-                      convidado,
-                    ) {
-                      final bateNome = convidado.nome.toLowerCase().contains(
-                        _textoBusca,
-                      );
+                    final todosConvidados = snapConvidados.data!;
 
-                      final bateMesa =
-                          _mesaFiltroId == null ||
-                          convidado.mesaId == _mesaFiltroId;
+                    return StreamBuilder<List<ConflitoSincronizacao>>(
+                      stream: _streamConflitos,
+                      builder: (context, snapConflitos) {
+                        final conflitos =
+                            snapConflitos.data ?? <ConflitoSincronizacao>[];
 
-                      return bateNome && bateMesa;
-                    }).toList();
+                        return StreamBuilder<List<ErroSincronizacaoLocal>>(
+                          stream: _streamErrosSincronizacao,
+                          builder: (context, snapErros) {
+                            final erros =
+                                snapErros.data ?? <ErroSincronizacaoLocal>[];
 
-                    convidadosFiltrados.sort((primeiro, segundo) {
-                      final mesaPrimeiro = mesas.firstWhere(
-                        (mesa) => mesa.id == primeiro.mesaId,
-                        orElse: () => Mesa(id: '', numero: 99999),
-                      );
-
-                      final mesaSegundo = mesas.firstWhere(
-                        (mesa) => mesa.id == segundo.mesaId,
-                        orElse: () => Mesa(id: '', numero: 99999),
-                      );
-
-                      final comparacaoMesa = mesaPrimeiro.numero.compareTo(
-                        mesaSegundo.numero,
-                      );
-
-                      if (comparacaoMesa != 0) {
-                        return comparacaoMesa;
-                      }
-
-                      return primeiro.nome.toLowerCase().compareTo(
-                        segundo.nome.toLowerCase(),
-                      );
-                    });
-
-                    return Column(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-                          child: TextField(
-                            controller: _controladorBusca,
-                            focusNode: _focoBusca,
-                            autofocus: false,
-                            textInputAction: TextInputAction.search,
-                            onTapOutside: (_) => _removerFocoBusca(),
-                            decoration: InputDecoration(
-                              hintText: 'Buscar convidado por nome...',
-                              prefixIcon: const Icon(Icons.search),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              filled: true,
-                              fillColor: Colors.grey.shade100,
-                              isDense: true,
-                            ),
-                            onChanged: (valor) {
-                              setState(() {
-                                _textoBusca = valor.toLowerCase();
-                              });
-                            },
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-                          child: DropdownButtonFormField<String?>(
-                            key: ValueKey('filtro-mesa-$_mesaFiltroId'),
-                            initialValue: _mesaFiltroId,
-                            decoration: InputDecoration(
-                              prefixIcon: const Icon(Icons.filter_list),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              filled: true,
-                              fillColor: Colors.grey.shade100,
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 14,
-                                vertical: 10,
-                              ),
-                            ),
-                            isExpanded: true,
-                            onTap: _removerFocoBusca,
-                            items: [
-                              const DropdownMenuItem<String?>(
-                                value: null,
-                                child: Text(
-                                  'Todas as mesas',
-                                  style: TextStyle(fontWeight: FontWeight.bold),
-                                ),
-                              ),
-                              ...mesas.map((mesa) {
-                                return DropdownMenuItem<String?>(
-                                  value: mesa.id,
-                                  child: Text(mesa.nomeExibicao),
+                            final alertasPorConvidado =
+                                _montarAlertasPorConvidado(
+                                  convidados: todosConvidados,
+                                  conflitos: conflitos,
+                                  erros: erros,
                                 );
-                              }),
-                            ],
-                            onChanged: (valor) {
-                              _removerFocoBusca();
 
-                              setState(() {
-                                _mesaFiltroId = valor;
-                              });
-                            },
-                          ),
-                        ),
-                        Expanded(
-                          child: convidadosFiltrados.isEmpty
-                              ? const Center(
-                                  child: Text('Nenhum convidado encontrado.'),
-                                )
-                              : ListView.builder(
-                                  keyboardDismissBehavior:
-                                      ScrollViewKeyboardDismissBehavior.onDrag,
-                                  itemCount: convidadosFiltrados.length,
-                                  padding: const EdgeInsets.only(bottom: 12),
-                                  itemBuilder: (context, index) {
-                                    final convidado =
-                                        convidadosFiltrados[index];
+                            final convidadosFiltrados = todosConvidados.where((
+                              convidado,
+                            ) {
+                              final bateNome = convidado.nome
+                                  .toLowerCase()
+                                  .contains(_textoBusca);
 
-                                    final mesa = mesas.firstWhere(
-                                      (item) => item.id == convidado.mesaId,
-                                      orElse: () => Mesa(id: '', numero: -1),
-                                    );
+                              final bateMesa =
+                                  _mesaFiltroId == null ||
+                                  convidado.mesaId == _mesaFiltroId;
 
-                                    return _construirCardConvidado(
-                                      convidado: convidado,
-                                      mesa: mesa,
-                                      todosEventos: todosEventos,
-                                      usuariosPorId: usuariosPorId,
-                                    );
-                                  },
+                              return bateNome && bateMesa;
+                            }).toList();
+
+                            convidadosFiltrados.sort((primeiro, segundo) {
+                              final primeiroComAlerta =
+                                  primeiro.temConflito ||
+                                  (alertasPorConvidado[primeiro.id]
+                                          ?.isNotEmpty ??
+                                      false);
+
+                              final segundoComAlerta =
+                                  segundo.temConflito ||
+                                  (alertasPorConvidado[segundo.id]
+                                          ?.isNotEmpty ??
+                                      false);
+
+                              if (primeiroComAlerta != segundoComAlerta) {
+                                return primeiroComAlerta ? -1 : 1;
+                              }
+
+                              final mesaPrimeiro = mesas.firstWhere(
+                                (mesa) => mesa.id == primeiro.mesaId,
+                                orElse: () => Mesa(id: '', numero: 99999),
+                              );
+
+                              final mesaSegundo = mesas.firstWhere(
+                                (mesa) => mesa.id == segundo.mesaId,
+                                orElse: () => Mesa(id: '', numero: 99999),
+                              );
+
+                              final comparacaoMesa = mesaPrimeiro.numero
+                                  .compareTo(mesaSegundo.numero);
+
+                              if (comparacaoMesa != 0) {
+                                return comparacaoMesa;
+                              }
+
+                              return primeiro.nome.toLowerCase().compareTo(
+                                segundo.nome.toLowerCase(),
+                              );
+                            });
+
+                            return Column(
+                              children: [
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    12,
+                                    12,
+                                    12,
+                                    6,
+                                  ),
+                                  child: TextField(
+                                    controller: _controladorBusca,
+                                    focusNode: _focoBusca,
+                                    autofocus: false,
+                                    textInputAction: TextInputAction.search,
+                                    onTapOutside: (_) => _removerFocoBusca(),
+                                    decoration: InputDecoration(
+                                      hintText: 'Buscar convidado por nome...',
+                                      prefixIcon: const Icon(Icons.search),
+                                      border: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      filled: true,
+                                      fillColor: Colors.grey.shade100,
+                                      isDense: true,
+                                    ),
+                                    onChanged: (valor) {
+                                      setState(() {
+                                        _textoBusca = valor.toLowerCase();
+                                      });
+                                    },
+                                  ),
                                 ),
-                        ),
-                      ],
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    12,
+                                    0,
+                                    12,
+                                    6,
+                                  ),
+                                  child: DropdownButtonFormField<String?>(
+                                    key: ValueKey('filtro-mesa-$_mesaFiltroId'),
+                                    initialValue: _mesaFiltroId,
+                                    decoration: InputDecoration(
+                                      prefixIcon: const Icon(Icons.filter_list),
+                                      border: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      filled: true,
+                                      fillColor: Colors.grey.shade100,
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                            horizontal: 14,
+                                            vertical: 10,
+                                          ),
+                                    ),
+                                    isExpanded: true,
+                                    onTap: _removerFocoBusca,
+                                    items: [
+                                      const DropdownMenuItem<String?>(
+                                        value: null,
+                                        child: Text(
+                                          'Todas as mesas',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                      ...mesas.map((mesa) {
+                                        return DropdownMenuItem<String?>(
+                                          value: mesa.id,
+                                          child: Text(mesa.nomeExibicao),
+                                        );
+                                      }),
+                                    ],
+                                    onChanged: (valor) {
+                                      _removerFocoBusca();
+
+                                      setState(() {
+                                        _mesaFiltroId = valor;
+                                      });
+                                    },
+                                  ),
+                                ),
+                                Expanded(
+                                  child: convidadosFiltrados.isEmpty
+                                      ? const Center(
+                                          child: Text(
+                                            'Nenhum convidado encontrado.',
+                                          ),
+                                        )
+                                      : ListView.builder(
+                                          keyboardDismissBehavior:
+                                              ScrollViewKeyboardDismissBehavior
+                                                  .onDrag,
+                                          itemCount: convidadosFiltrados.length,
+                                          padding: const EdgeInsets.only(
+                                            bottom: 12,
+                                          ),
+                                          itemBuilder: (context, index) {
+                                            final convidado =
+                                                convidadosFiltrados[index];
+
+                                            final mesa = mesas.firstWhere(
+                                              (item) =>
+                                                  item.id == convidado.mesaId,
+                                              orElse: () =>
+                                                  Mesa(id: '', numero: -1),
+                                            );
+
+                                            return _construirCardConvidado(
+                                              convidado: convidado,
+                                              mesa: mesa,
+                                              todosEventos: todosEventos,
+                                              usuariosPorId: usuariosPorId,
+                                              alertas:
+                                                  alertasPorConvidado[convidado
+                                                      .id] ??
+                                                  const [],
+                                            );
+                                          },
+                                        ),
+                                ),
+                              ],
+                            );
+                          },
+                        );
+                      },
                     );
                   },
                 );

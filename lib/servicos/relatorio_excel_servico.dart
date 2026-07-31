@@ -1,11 +1,13 @@
 import 'dart:convert';
-import 'dart:typed_data';
-
 import 'package:excel/excel.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../banco/banco_instancia.dart';
 import '../banco/banco_local.dart';
+import 'casamento_atual_servico.dart';
 
 class ResultadoRelatorioExcel {
   final String nomeArquivo;
@@ -25,6 +27,83 @@ class ResultadoRelatorioExcel {
   });
 }
 
+
+class _DestaqueRelatorioIa {
+  final String titulo;
+  final String texto;
+  final String tipo;
+
+  const _DestaqueRelatorioIa({
+    required this.titulo,
+    required this.texto,
+    required this.tipo,
+  });
+
+  factory _DestaqueRelatorioIa.fromJson(Map<String, dynamic> json) {
+    final tipo = (json['tipo'] ?? 'neutro').toString().trim().toLowerCase();
+    return _DestaqueRelatorioIa(
+      titulo: (json['titulo'] ?? 'Destaque').toString().trim(),
+      texto: (json['texto'] ?? '').toString().trim(),
+      tipo: const {'positivo', 'atencao', 'neutro'}.contains(tipo)
+          ? tipo
+          : 'neutro',
+    );
+  }
+}
+
+class _InsightsRelatorioIa {
+  final String tituloDashboard;
+  final String resumoExecutivo;
+  final List<_DestaqueRelatorioIa> destaques;
+  final List<String> alertas;
+  final List<String> recomendacoes;
+  final String modelo;
+  final bool geradoPorIa;
+  final String? aviso;
+
+  const _InsightsRelatorioIa({
+    required this.tituloDashboard,
+    required this.resumoExecutivo,
+    required this.destaques,
+    required this.alertas,
+    required this.recomendacoes,
+    required this.modelo,
+    required this.geradoPorIa,
+    this.aviso,
+  });
+}
+
+class _ItemGraficoDashboard {
+  final String nome;
+  final int valor;
+  final CellStyle estilo;
+
+  const _ItemGraficoDashboard({
+    required this.nome,
+    required this.valor,
+    required this.estilo,
+  });
+}
+
+class _ResumoMesaRelatorio {
+  final String nome;
+  final int total;
+  final int presentes;
+  final int ausentes;
+  final int conflitos;
+
+  const _ResumoMesaRelatorio({
+    required this.nome,
+    required this.total,
+    required this.presentes,
+    required this.ausentes,
+    required this.conflitos,
+  });
+
+  double get taxaPresenca => total == 0 ? 0 : presentes / total;
+}
+
+
 /// Gera um relatório completo da recepção em formato Excel (.xlsx).
 ///
 /// O arquivo utiliza exclusivamente os dados que já estão no SQLite local.
@@ -35,9 +114,14 @@ class RelatorioExcelServico {
   static final RelatorioExcelServico instance = RelatorioExcelServico._();
 
   final BancoLocal _banco = bancoLocal;
+  final SupabaseClient _supabase = Supabase.instance.client;
 
   static const String _mimeTypeXlsx =
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  static const MethodChannel _canalArquivos = MethodChannel(
+    'br.com.appcasamento/arquivos',
+  );
 
   Future<ResultadoRelatorioExcel> gerarECompartilhar() async {
     final mesas = await _banco.select(_banco.mesasLocais).get();
@@ -94,12 +178,55 @@ class RelatorioExcelServico {
         .where((convidado) => convidado.temConflito)
         .length;
 
+    final casamento = CasamentoAtualServico.instance.casamento;
+    if (casamento == null) {
+      throw StateError('Nenhum casamento foi selecionado para o relatório.');
+    }
+
+    final observacoesPorConvidado = await _buscarObservacoesConvidados(
+      casamento.id,
+    );
+
+    final resumosMesas = _calcularResumoMesas(
+      convidados: convidadosAtivos,
+      mesasPorId: mesasPorId,
+    );
+    final chegadasPorHora = _calcularChegadasPorHora(
+      convidados: convidadosAtivos,
+      eventosPorConvidado: eventosPorConvidado,
+    );
+
+    final insights = await _gerarInsightsComIa(
+      casamentoId: casamento.id,
+      casamento: casamento,
+      convidados: convidadosAtivos,
+      observacoesPorConvidado: observacoesPorConvidado,
+      resumosMesas: resumosMesas,
+      chegadasPorHora: chegadasPorHora,
+      totalConvidados: totalConvidados,
+      presentes: presentes,
+      ausentes: ausentes,
+      conflitos: conflitos,
+    );
+
     final excel = Excel.createExcel();
     final nomePadrao = excel.getDefaultSheet();
 
-    if (nomePadrao != null && nomePadrao != 'Resumo') {
-      excel.rename(nomePadrao, 'Resumo');
+    if (nomePadrao != null && nomePadrao != 'Dashboard') {
+      excel.rename(nomePadrao, 'Dashboard');
     }
+
+    _montarDashboardIa(
+      excel: excel,
+      casamento: casamento,
+      insights: insights,
+      resumosMesas: resumosMesas,
+      chegadasPorHora: chegadasPorHora,
+      totalConvidados: totalConvidados,
+      presentes: presentes,
+      ausentes: ausentes,
+      conflitos: conflitos,
+    );
 
     _montarResumo(
       excel: excel,
@@ -118,6 +245,7 @@ class RelatorioExcelServico {
       mesasPorId: mesasPorId,
       usuariosPorId: usuariosPorId,
       eventosPorConvidado: eventosPorConvidado,
+      observacoesPorConvidado: observacoesPorConvidado,
     );
 
     _montarHistorico(
@@ -134,7 +262,7 @@ class RelatorioExcelServico {
       mesasPorId: mesasPorId,
     );
 
-    excel.setDefaultSheet('Resumo');
+    excel.setDefaultSheet('Dashboard');
 
     final bytes = excel.encode();
 
@@ -146,18 +274,25 @@ class RelatorioExcelServico {
     final nomeArquivo =
         'relatorio_casamento_${_formatarParaNomeArquivo(agora)}.xlsx';
 
+    final bytesArquivo = Uint8List.fromList(bytes);
+
+    await _salvarCopiaEmDownloads(
+      nomeArquivo: nomeArquivo,
+      bytes: bytesArquivo,
+    );
+
     final arquivo = XFile.fromData(
-      Uint8List.fromList(bytes),
+      bytesArquivo,
       mimeType: _mimeTypeXlsx,
       name: nomeArquivo,
     );
 
     final resultadoCompartilhamento = await SharePlus.instance.share(
       ShareParams(
-        title: 'Relatório da recepção',
-        subject: 'Relatório completo da recepção',
+        title: 'Dashboard da recepção',
+        subject: 'Relatório inteligente da recepção',
         text:
-            'Relatório completo da recepção: presentes, ausentes, horários e histórico de check-in.',
+            'Dashboard da recepção com análise por IA, indicadores, convidados, mesas e histórico de check-in.',
         files: [arquivo],
         fileNameOverrides: [nomeArquivo],
       ),
@@ -171,6 +306,745 @@ class RelatorioExcelServico {
       conflitos: conflitos,
       statusCompartilhamento: resultadoCompartilhamento.status,
     );
+  }
+
+
+  Future<void> _salvarCopiaEmDownloads({
+    required String nomeArquivo,
+    required Uint8List bytes,
+  }) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+
+    try {
+      final resultado = await _canalArquivos.invokeMapMethod<String, dynamic>(
+        'salvarEmDownloads',
+        <String, dynamic>{
+          'nomeArquivo': nomeArquivo,
+          'mimeType': _mimeTypeXlsx,
+          'bytes': bytes,
+        },
+      );
+
+      final local = resultado?['local']?.toString().trim();
+      if (local == null || local.isEmpty) {
+        throw PlatformException(
+          code: 'RESPOSTA_INVALIDA',
+          message: 'O Android não confirmou onde o relatório foi salvo.',
+        );
+      }
+    } on PlatformException catch (erro) {
+      final mensagem = erro.message?.trim();
+      throw StateError(
+        mensagem == null || mensagem.isEmpty
+            ? 'Não foi possível salvar o relatório na pasta Downloads.'
+            : 'Não foi possível salvar o relatório na pasta Downloads: '
+                '$mensagem',
+      );
+    } on MissingPluginException {
+      throw StateError(
+        'O recurso de salvar em Downloads ainda não foi carregado. '
+        'Feche o aplicativo completamente e execute-o novamente.',
+      );
+    }
+  }
+
+
+  Future<Map<String, String>> _buscarObservacoesConvidados(
+    String casamentoId,
+  ) async {
+    try {
+      final resposta = await _supabase
+          .from('convidados')
+          .select('id, observacao, deleted_at')
+          .eq('casamento_id', casamentoId);
+
+      final observacoes = <String, String>{};
+
+      for (final item in resposta as List) {
+        final registro = Map<String, dynamic>.from(item as Map);
+        if (registro['deleted_at'] != null) continue;
+
+        final id = registro['id']?.toString().trim();
+        final observacao = registro['observacao']?.toString().trim();
+
+        if (id != null &&
+            id.isNotEmpty &&
+            observacao != null &&
+            observacao.isNotEmpty) {
+          observacoes[id] = observacao;
+        }
+      }
+
+      return observacoes;
+    } catch (_) {
+      // O relatório continua sendo gerado mesmo sem conexão. Nesse caso,
+      // somente as observações do servidor deixam de aparecer.
+      return const <String, String>{};
+    }
+  }
+
+
+  Future<_InsightsRelatorioIa> _gerarInsightsComIa({
+    required String casamentoId,
+    required CasamentoAtual casamento,
+    required List<ConvidadoLocalRegistro> convidados,
+    required Map<String, String> observacoesPorConvidado,
+    required List<_ResumoMesaRelatorio> resumosMesas,
+    required Map<String, int> chegadasPorHora,
+    required int totalConvidados,
+    required int presentes,
+    required int ausentes,
+    required int conflitos,
+  }) async {
+    final observacoes = convidados
+        .where(
+          (item) =>
+              observacoesPorConvidado[item.id]?.trim().isNotEmpty == true,
+        )
+        .take(250)
+        .map(
+          (item) => {
+            'nome': item.nome,
+            'observacao': observacoesPorConvidado[item.id]!.trim(),
+          },
+        )
+        .toList(growable: false);
+
+    final payload = <String, dynamic>{
+      'casamento': {
+        'titulo': casamento.titulo,
+        'descricao': casamento.descricao,
+        'data': casamento.dataEvento?.toIso8601String(),
+        'horario': casamento.horarioEvento,
+        'local': casamento.localEvento,
+        'status': casamento.status,
+      },
+      'indicadores': {
+        'total_convidados': totalConvidados,
+        'presentes': presentes,
+        'ausentes': ausentes,
+        'conflitos': conflitos,
+        'taxa_presenca': totalConvidados == 0
+            ? 0
+            : presentes / totalConvidados,
+        'convidados_com_observacao': observacoes.length,
+      },
+      'mesas': resumosMesas
+          .map(
+            (mesa) => {
+              'nome': mesa.nome,
+              'total': mesa.total,
+              'presentes': mesa.presentes,
+              'ausentes': mesa.ausentes,
+              'conflitos': mesa.conflitos,
+              'taxa_presenca': mesa.taxaPresenca,
+            },
+          )
+          .toList(growable: false),
+      'chegadas_por_hora': chegadasPorHora,
+      'observacoes_relevantes': observacoes,
+    };
+
+    try {
+      final resposta = await _supabase.functions
+          .invoke(
+            'gerar-relatorio-ia',
+            body: {
+              'casamento_id': casamentoId,
+              'dados': payload,
+            },
+          )
+          .timeout(const Duration(minutes: 2));
+
+      final dados = _converterMapa(resposta.data);
+      if (resposta.status < 200 || resposta.status >= 300) {
+        throw StateError(
+          _mensagemDaResposta(dados) ??
+              'A IA não conseguiu gerar a análise do relatório.',
+        );
+      }
+
+      final resultado = _converterMapa(dados['resultado']);
+      if (resultado.isEmpty) {
+        throw StateError('A IA retornou uma análise vazia.');
+      }
+
+      final metadados = _converterMapa(dados['metadados']);
+      final destaquesBrutos = resultado['destaques'];
+      final alertasBrutos = resultado['alertas'];
+      final recomendacoesBrutas = resultado['recomendacoes'];
+
+      return _InsightsRelatorioIa(
+        tituloDashboard: _textoOuPadrao(
+          resultado['titulo_dashboard'],
+          'Dashboard da recepção',
+        ),
+        resumoExecutivo: _textoOuPadrao(
+          resultado['resumo_executivo'],
+          _resumoDeterministico(
+            total: totalConvidados,
+            presentes: presentes,
+            ausentes: ausentes,
+            conflitos: conflitos,
+          ),
+        ),
+        destaques: destaquesBrutos is List
+            ? destaquesBrutos
+                  .whereType<Map>()
+                  .map(
+                    (item) => _DestaqueRelatorioIa.fromJson(
+                      Map<String, dynamic>.from(item),
+                    ),
+                  )
+                  .where((item) => item.texto.isNotEmpty)
+                  .take(4)
+                  .toList(growable: false)
+            : const [],
+        alertas: _listaDeTextos(alertasBrutos, limite: 5),
+        recomendacoes: _listaDeTextos(recomendacoesBrutas, limite: 5),
+        modelo: _textoOuPadrao(metadados['modelo'], 'Gemini'),
+        geradoPorIa: true,
+      );
+    } catch (erro) {
+      return _InsightsRelatorioIa(
+        tituloDashboard: 'Dashboard da recepção',
+        resumoExecutivo: _resumoDeterministico(
+          total: totalConvidados,
+          presentes: presentes,
+          ausentes: ausentes,
+          conflitos: conflitos,
+        ),
+        destaques: [
+          _DestaqueRelatorioIa(
+            titulo: 'Presença geral',
+            texto: totalConvidados == 0
+                ? 'A lista não possui convidados ativos.'
+                : '${_formatarPercentual(presentes / totalConvidados)} dos convidados estão presentes.',
+            tipo: 'neutro',
+          ),
+        ],
+        alertas: conflitos > 0
+            ? ['$conflitos conflito(s) ainda precisam ser resolvido(s).']
+            : const [],
+        recomendacoes: const [
+          'Consulte as abas Convidados, Mesas e Histórico para os detalhes operacionais.',
+        ],
+        modelo: 'Análise local',
+        geradoPorIa: false,
+        aviso:
+            'A IA não respondeu e o aplicativo criou uma análise local. Detalhe: ${_limitarTexto(erro.toString(), 180)}',
+      );
+    }
+  }
+
+  void _montarDashboardIa({
+    required Excel excel,
+    required CasamentoAtual casamento,
+    required _InsightsRelatorioIa insights,
+    required List<_ResumoMesaRelatorio> resumosMesas,
+    required Map<String, int> chegadasPorHora,
+    required int totalConvidados,
+    required int presentes,
+    required int ausentes,
+    required int conflitos,
+  }) {
+    final planilha = excel['Dashboard'];
+
+    planilha.merge(
+      CellIndex.indexByString('A1'),
+      CellIndex.indexByString('H2'),
+      customValue: TextCellValue(insights.tituloDashboard.toUpperCase()),
+    );
+    planilha.setMergedCellStyle(
+      CellIndex.indexByString('A1'),
+      _estiloDashboardTitulo,
+    );
+    planilha.setRowHeight(0, 34);
+    planilha.setRowHeight(1, 20);
+
+    final dadosEvento = <String>[
+      casamento.descricao,
+      if (casamento.dataEvento != null)
+        _formatarSomenteData(casamento.dataEvento!),
+      if (casamento.horarioEvento?.trim().isNotEmpty == true)
+        casamento.horarioEvento!.trim(),
+      if (casamento.localEvento?.trim().isNotEmpty == true)
+        casamento.localEvento!.trim(),
+    ].join(' • ');
+
+    planilha.merge(
+      CellIndex.indexByString('A3'),
+      CellIndex.indexByString('H3'),
+      customValue: TextCellValue(dadosEvento),
+    );
+    planilha.setMergedCellStyle(
+      CellIndex.indexByString('A3'),
+      _estiloDashboardSubtitulo,
+    );
+
+    _preencherCartaoDashboard(
+      planilha,
+      colunaInicial: 0,
+      titulo: 'CONVIDADOS',
+      valor: '$totalConvidados',
+      estiloValor: _estiloDashboardValorRoxo,
+    );
+    _preencherCartaoDashboard(
+      planilha,
+      colunaInicial: 2,
+      titulo: 'PRESENTES',
+      valor: '$presentes',
+      estiloValor: _estiloDashboardValorVerde,
+    );
+    _preencherCartaoDashboard(
+      planilha,
+      colunaInicial: 4,
+      titulo: 'AUSENTES',
+      valor: '$ausentes',
+      estiloValor: _estiloDashboardValorVermelho,
+    );
+    _preencherCartaoDashboard(
+      planilha,
+      colunaInicial: 6,
+      titulo: 'CONFLITOS',
+      valor: '$conflitos',
+      estiloValor: conflitos > 0
+          ? _estiloDashboardValorLaranja
+          : _estiloDashboardValorVerde,
+    );
+
+    _tituloSecaoDashboard(planilha, linha: 8, inicio: 0, fim: 3, titulo: 'PRESENÇA GERAL');
+    _tituloSecaoDashboard(planilha, linha: 8, inicio: 4, fim: 7, titulo: 'CHEGADAS POR HORÁRIO');
+
+    final valoresStatus = <_ItemGraficoDashboard>[
+      _ItemGraficoDashboard(
+        nome: 'Presentes',
+        valor: presentes,
+        estilo: _estiloGraficoVerde,
+      ),
+      _ItemGraficoDashboard(
+        nome: 'Ausentes',
+        valor: ausentes,
+        estilo: _estiloGraficoVermelho,
+      ),
+      _ItemGraficoDashboard(
+        nome: 'Conflitos',
+        valor: conflitos,
+        estilo: _estiloGraficoLaranja,
+      ),
+    ];
+
+    var linhaGrafico = 9;
+    for (final item in valoresStatus) {
+      _definirCelula(
+        planilha,
+        linha: linhaGrafico,
+        coluna: 0,
+        valor: TextCellValue(item.nome),
+        estilo: _estiloDashboardRotulo,
+      );
+      planilha.merge(
+        CellIndex.indexByColumnRow(columnIndex: 1, rowIndex: linhaGrafico),
+        CellIndex.indexByColumnRow(columnIndex: 3, rowIndex: linhaGrafico),
+        customValue: TextCellValue(
+          '${_barraProgresso(item.valor, totalConvidados, blocos: 18)}  ${item.valor}',
+        ),
+      );
+      planilha.setMergedCellStyle(
+        CellIndex.indexByColumnRow(columnIndex: 1, rowIndex: linhaGrafico),
+        item.estilo,
+      );
+      planilha.setRowHeight(linhaGrafico, 25);
+      linhaGrafico += 2;
+    }
+
+    final maxChegadas = chegadasPorHora.values.fold<int>(
+      0,
+      (maior, valor) => valor > maior ? valor : maior,
+    );
+    final horarios = chegadasPorHora.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+
+    if (horarios.isEmpty) {
+      planilha.merge(
+        CellIndex.indexByString('E10'),
+        CellIndex.indexByString('H14'),
+        customValue: TextCellValue('Nenhuma chegada confirmada.'),
+      );
+      planilha.setMergedCellStyle(
+        CellIndex.indexByString('E10'),
+        _estiloDashboardTextoCentral,
+      );
+    } else {
+      var linhaHora = 9;
+      for (final entrada in horarios.take(6)) {
+        _definirCelula(
+          planilha,
+          linha: linhaHora,
+          coluna: 4,
+          valor: TextCellValue(entrada.key),
+          estilo: _estiloDashboardRotulo,
+        );
+        planilha.merge(
+          CellIndex.indexByColumnRow(columnIndex: 5, rowIndex: linhaHora),
+          CellIndex.indexByColumnRow(columnIndex: 7, rowIndex: linhaHora),
+          customValue: TextCellValue(
+            '${_barraProgresso(entrada.value, maxChegadas, blocos: 14)}  ${entrada.value}',
+          ),
+        );
+        planilha.setMergedCellStyle(
+          CellIndex.indexByColumnRow(columnIndex: 5, rowIndex: linhaHora),
+          _estiloGraficoRoxo,
+        );
+        linhaHora++;
+      }
+    }
+
+    _tituloSecaoDashboard(planilha, linha: 16, inicio: 0, fim: 7, titulo: 'ANÁLISE INTELIGENTE');
+    planilha.merge(
+      CellIndex.indexByString('A18'),
+      CellIndex.indexByString('H21'),
+      customValue: TextCellValue(insights.resumoExecutivo),
+    );
+    planilha.setMergedCellStyle(
+      CellIndex.indexByString('A18'),
+      _estiloDashboardResumoIa,
+    );
+
+    var proximaLinha = 22;
+    if (insights.destaques.isNotEmpty) {
+      _tituloSecaoDashboard(
+        planilha,
+        linha: proximaLinha,
+        inicio: 0,
+        fim: 7,
+        titulo: 'DESTAQUES',
+      );
+      proximaLinha += 2;
+
+      for (var indice = 0; indice < insights.destaques.length; indice++) {
+        final destaque = insights.destaques[indice];
+        final inicio = indice.isEven ? 0 : 4;
+        final linha = proximaLinha + (indice ~/ 2) * 4;
+        planilha.merge(
+          CellIndex.indexByColumnRow(columnIndex: inicio, rowIndex: linha),
+          CellIndex.indexByColumnRow(columnIndex: inicio + 3, rowIndex: linha + 2),
+          customValue: TextCellValue('${destaque.titulo}\n${destaque.texto}'),
+        );
+        planilha.setMergedCellStyle(
+          CellIndex.indexByColumnRow(columnIndex: inicio, rowIndex: linha),
+          _estiloDestaque(destaque.tipo),
+        );
+      }
+      proximaLinha += ((insights.destaques.length + 1) ~/ 2) * 4;
+    }
+
+    _tituloSecaoDashboard(
+      planilha,
+      linha: proximaLinha,
+      inicio: 0,
+      fim: 3,
+      titulo: 'ALERTAS',
+    );
+    _tituloSecaoDashboard(
+      planilha,
+      linha: proximaLinha,
+      inicio: 4,
+      fim: 7,
+      titulo: 'RECOMENDAÇÕES',
+    );
+    proximaLinha += 2;
+
+    final quantidadeLinhas = [
+      insights.alertas.length,
+      insights.recomendacoes.length,
+      1,
+    ].reduce((a, b) => a > b ? a : b);
+
+    for (var indice = 0; indice < quantidadeLinhas; indice++) {
+      final alerta = indice < insights.alertas.length
+          ? '• ${insights.alertas[indice]}'
+          : indice == 0
+          ? 'Nenhum alerta crítico identificado.'
+          : '';
+      final recomendacao = indice < insights.recomendacoes.length
+          ? '• ${insights.recomendacoes[indice]}'
+          : '';
+
+      planilha.merge(
+        CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: proximaLinha + indice),
+        CellIndex.indexByColumnRow(columnIndex: 3, rowIndex: proximaLinha + indice),
+        customValue: TextCellValue(alerta),
+      );
+      planilha.setMergedCellStyle(
+        CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: proximaLinha + indice),
+        _estiloDashboardAlerta,
+      );
+
+      planilha.merge(
+        CellIndex.indexByColumnRow(columnIndex: 4, rowIndex: proximaLinha + indice),
+        CellIndex.indexByColumnRow(columnIndex: 7, rowIndex: proximaLinha + indice),
+        customValue: TextCellValue(recomendacao),
+      );
+      planilha.setMergedCellStyle(
+        CellIndex.indexByColumnRow(columnIndex: 4, rowIndex: proximaLinha + indice),
+        _estiloDashboardRecomendacao,
+      );
+    }
+
+    proximaLinha += quantidadeLinhas + 1;
+    _tituloSecaoDashboard(
+      planilha,
+      linha: proximaLinha,
+      inicio: 0,
+      fim: 7,
+      titulo: 'MESAS COM MAIOR MOVIMENTO',
+    );
+    proximaLinha += 2;
+
+    _escreverCabecalho(
+      planilha,
+      linha: proximaLinha,
+      titulos: const [
+        'Mesa',
+        'Total',
+        'Presentes',
+        'Ausentes',
+        'Conflitos',
+        'Presença',
+        'Indicador',
+        'Situação',
+      ],
+    );
+    proximaLinha++;
+
+    final mesasOrdenadas = List<_ResumoMesaRelatorio>.from(resumosMesas)
+      ..sort((a, b) => b.total.compareTo(a.total));
+    for (final mesa in mesasOrdenadas.take(8)) {
+      _escreverLinha(
+        planilha,
+        linha: proximaLinha,
+        valores: [
+          TextCellValue(mesa.nome),
+          IntCellValue(mesa.total),
+          IntCellValue(mesa.presentes),
+          IntCellValue(mesa.ausentes),
+          IntCellValue(mesa.conflitos),
+          DoubleCellValue(mesa.taxaPresenca),
+          TextCellValue(_barraProgresso(mesa.presentes, mesa.total, blocos: 12)),
+          TextCellValue(
+            mesa.conflitos > 0
+                ? 'Atenção'
+                : mesa.taxaPresenca >= 0.8
+                ? 'Ótima presença'
+                : 'Acompanhar',
+          ),
+        ],
+      );
+      _aplicarEstilo(
+        planilha,
+        linha: proximaLinha,
+        coluna: 5,
+        estilo: _estiloPercentualTabela,
+      );
+      proximaLinha++;
+    }
+
+    final fonte = insights.geradoPorIa
+        ? 'Análise gerada por IA (${insights.modelo}).'
+        : 'Análise local utilizada porque a IA não estava disponível.';
+    final rodape = insights.aviso == null ? fonte : '$fonte ${insights.aviso}';
+    proximaLinha += 1;
+    planilha.merge(
+      CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: proximaLinha),
+      CellIndex.indexByColumnRow(columnIndex: 7, rowIndex: proximaLinha + 1),
+      customValue: TextCellValue(
+        '$rodape Gerado em ${_formatarDataHora(DateTime.now())}.',
+      ),
+    );
+    planilha.setMergedCellStyle(
+      CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: proximaLinha),
+      _estiloNota,
+    );
+
+    final larguras = <double>[18, 17, 17, 17, 18, 17, 17, 20];
+    for (var coluna = 0; coluna < larguras.length; coluna++) {
+      planilha.setColumnWidth(coluna, larguras[coluna]);
+    }
+  }
+
+  List<_ResumoMesaRelatorio> _calcularResumoMesas({
+    required List<ConvidadoLocalRegistro> convidados,
+    required Map<String, MesaLocalRegistro> mesasPorId,
+  }) {
+    final grupos = <String, List<ConvidadoLocalRegistro>>{};
+    for (final convidado in convidados) {
+      grupos
+          .putIfAbsent(
+            convidado.mesaId ?? '__sem_mesa__',
+            () => <ConvidadoLocalRegistro>[],
+          )
+          .add(convidado);
+    }
+
+    final resultado = <_ResumoMesaRelatorio>[];
+    for (final entrada in grupos.entries) {
+      final grupo = entrada.value;
+      final presentes = grupo
+          .where((item) => item.chegou && !item.temConflito)
+          .length;
+      final conflitos = grupo.where((item) => item.temConflito).length;
+      resultado.add(
+        _ResumoMesaRelatorio(
+          nome: entrada.key == '__sem_mesa__'
+              ? 'Sem mesa'
+              : _nomeMesa(
+                  mesasPorId[entrada.key],
+                  mesaIdOriginal: entrada.key,
+                ),
+          total: grupo.length,
+          presentes: presentes,
+          ausentes: grupo.length - presentes - conflitos,
+          conflitos: conflitos,
+        ),
+      );
+    }
+
+    resultado.sort((a, b) => a.nome.compareTo(b.nome));
+    return resultado;
+  }
+
+  Map<String, int> _calcularChegadasPorHora({
+    required List<ConvidadoLocalRegistro> convidados,
+    required Map<String, List<EventoCheckinLocalRegistro>> eventosPorConvidado,
+  }) {
+    final resultado = <String, int>{};
+    for (final convidado in convidados) {
+      if (!convidado.chegou || convidado.temConflito) continue;
+      final evento = _obterEventoAtualPresente(
+        convidado: convidado,
+        eventos: eventosPorConvidado[convidado.id] ?? const [],
+      );
+      if (evento == null) continue;
+      final hora = evento.dataDispositivo.toLocal().hour;
+      final chave = '${_doisDigitos(hora)}:00';
+      resultado[chave] = (resultado[chave] ?? 0) + 1;
+    }
+    return resultado;
+  }
+
+  void _preencherCartaoDashboard(
+    Sheet planilha, {
+    required int colunaInicial,
+    required String titulo,
+    required String valor,
+    required CellStyle estiloValor,
+  }) {
+    planilha.merge(
+      CellIndex.indexByColumnRow(columnIndex: colunaInicial, rowIndex: 4),
+      CellIndex.indexByColumnRow(columnIndex: colunaInicial + 1, rowIndex: 4),
+      customValue: TextCellValue(titulo),
+    );
+    planilha.setMergedCellStyle(
+      CellIndex.indexByColumnRow(columnIndex: colunaInicial, rowIndex: 4),
+      _estiloDashboardCartaoTitulo,
+    );
+    planilha.merge(
+      CellIndex.indexByColumnRow(columnIndex: colunaInicial, rowIndex: 5),
+      CellIndex.indexByColumnRow(columnIndex: colunaInicial + 1, rowIndex: 6),
+      customValue: TextCellValue(valor),
+    );
+    planilha.setMergedCellStyle(
+      CellIndex.indexByColumnRow(columnIndex: colunaInicial, rowIndex: 5),
+      estiloValor,
+    );
+  }
+
+  void _tituloSecaoDashboard(
+    Sheet planilha, {
+    required int linha,
+    required int inicio,
+    required int fim,
+    required String titulo,
+  }) {
+    planilha.merge(
+      CellIndex.indexByColumnRow(columnIndex: inicio, rowIndex: linha),
+      CellIndex.indexByColumnRow(columnIndex: fim, rowIndex: linha),
+      customValue: TextCellValue(titulo),
+    );
+    planilha.setMergedCellStyle(
+      CellIndex.indexByColumnRow(columnIndex: inicio, rowIndex: linha),
+      _estiloDashboardSecao,
+    );
+  }
+
+  String _barraProgresso(int valor, int total, {required int blocos}) {
+    if (total <= 0 || valor <= 0) {
+      return List<String>.filled(blocos, '░').join();
+    }
+    final preenchidos = ((valor / total) * blocos)
+        .round()
+        .clamp(0, blocos)
+        .toInt();
+    final cheios = List<String>.filled(preenchidos, '█').join();
+    final vazios = List<String>.filled(blocos - preenchidos, '░').join();
+    return '$cheios$vazios';
+  }
+
+  Map<String, dynamic> _converterMapa(dynamic valor) {
+    if (valor is Map<String, dynamic>) return valor;
+    if (valor is Map) return Map<String, dynamic>.from(valor);
+    return const <String, dynamic>{};
+  }
+
+  String? _mensagemDaResposta(Map<String, dynamic> dados) {
+    for (final chave in const ['mensagem', 'message', 'error']) {
+      final texto = dados[chave]?.toString().trim();
+      if (texto != null && texto.isNotEmpty) return texto;
+    }
+    return null;
+  }
+
+  String _textoOuPadrao(dynamic valor, String padrao) {
+    final texto = valor?.toString().trim();
+    return texto == null || texto.isEmpty ? padrao : texto;
+  }
+
+  List<String> _listaDeTextos(dynamic valor, {required int limite}) {
+    if (valor is! List) return const [];
+    return valor
+        .map((item) => item.toString().trim())
+        .where((item) => item.isNotEmpty)
+        .take(limite)
+        .toList(growable: false);
+  }
+
+  String _resumoDeterministico({
+    required int total,
+    required int presentes,
+    required int ausentes,
+    required int conflitos,
+  }) {
+    final taxa = total == 0 ? 0.0 : presentes / total;
+    return 'O evento possui $total convidado(s), com $presentes presente(s), '
+        '$ausentes ausente(s) e $conflitos conflito(s). A taxa atual de '
+        'presença é ${_formatarPercentual(taxa)}.';
+  }
+
+  String _formatarPercentual(double valor) =>
+      '${(valor * 100).toStringAsFixed(1).replaceAll('.', ',')}%';
+
+  String _formatarSomenteData(DateTime data) {
+    final local = data.toLocal();
+    return '${_doisDigitos(local.day)}/${_doisDigitos(local.month)}/${local.year}';
+  }
+
+  String _limitarTexto(String texto, int limite) {
+    final limpo = texto.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (limpo.length <= limite) return limpo;
+    return '${limpo.substring(0, limite - 1)}…';
   }
 
   void _montarResumo({
@@ -407,6 +1281,7 @@ class RelatorioExcelServico {
     required Map<String, MesaLocalRegistro> mesasPorId,
     required Map<String, String> usuariosPorId,
     required Map<String, List<EventoCheckinLocalRegistro>> eventosPorConvidado,
+    required Map<String, String> observacoesPorConvidado,
   }) {
     final planilha = excel['Convidados'];
 
@@ -463,9 +1338,16 @@ class RelatorioExcelServico {
           ? 'Sincronizado'
           : 'Pendente';
 
-      final observacao = convidado.temConflito
-          ? 'Há ações contraditórias que precisam ser resolvidas no aplicativo.'
-          : ultimaAlteracao?.observacao ?? '';
+      final observacaoCadastro = observacoesPorConvidado[convidado.id];
+      final observacoes = <String>[
+        if (observacaoCadastro?.trim().isNotEmpty == true)
+          observacaoCadastro!.trim(),
+        if (convidado.temConflito)
+          'Há ações contraditórias que precisam ser resolvidas no aplicativo.'
+        else if (ultimaAlteracao?.observacao?.trim().isNotEmpty == true)
+          ultimaAlteracao!.observacao!.trim(),
+      ];
+      final observacao = observacoes.join(' | ');
 
       _escreverLinha(
         planilha,
@@ -994,6 +1876,204 @@ class RelatorioExcelServico {
 
   Border get _bordaFina =>
       Border(borderStyle: BorderStyle.Thin, borderColorHex: ExcelColor.grey400);
+
+
+  CellStyle get _estiloDashboardTitulo => CellStyle(
+    backgroundColorHex: ExcelColor.indigo700,
+    fontColorHex: ExcelColor.white,
+    fontSize: 22,
+    bold: true,
+    horizontalAlign: HorizontalAlign.Center,
+    verticalAlign: VerticalAlign.Center,
+    textWrapping: TextWrapping.WrapText,
+  );
+
+  CellStyle get _estiloDashboardSubtitulo => CellStyle(
+    backgroundColorHex: ExcelColor.indigo50,
+    fontColorHex: ExcelColor.indigo900,
+    fontSize: 11,
+    bold: true,
+    horizontalAlign: HorizontalAlign.Center,
+    verticalAlign: VerticalAlign.Center,
+    textWrapping: TextWrapping.WrapText,
+    bottomBorder: _bordaFina,
+  );
+
+  CellStyle get _estiloDashboardCartaoTitulo => CellStyle(
+    backgroundColorHex: ExcelColor.blueGrey100,
+    fontColorHex: ExcelColor.blueGrey900,
+    bold: true,
+    horizontalAlign: HorizontalAlign.Center,
+    verticalAlign: VerticalAlign.Center,
+    leftBorder: _bordaFina,
+    rightBorder: _bordaFina,
+    topBorder: _bordaFina,
+    bottomBorder: _bordaFina,
+  );
+
+  CellStyle get _estiloDashboardValorRoxo => _estiloValorDashboard(
+    fundo: ExcelColor.indigo50,
+    fonte: ExcelColor.indigo900,
+  );
+
+  CellStyle get _estiloDashboardValorVerde => _estiloValorDashboard(
+    fundo: ExcelColor.green100,
+    fonte: ExcelColor.green900,
+  );
+
+  CellStyle get _estiloDashboardValorVermelho => _estiloValorDashboard(
+    fundo: ExcelColor.red100,
+    fonte: ExcelColor.red900,
+  );
+
+  CellStyle get _estiloDashboardValorLaranja => _estiloValorDashboard(
+    fundo: ExcelColor.orange100,
+    fonte: ExcelColor.orange900,
+  );
+
+  CellStyle _estiloValorDashboard({
+    required ExcelColor fundo,
+    required ExcelColor fonte,
+  }) => CellStyle(
+    backgroundColorHex: fundo,
+    fontColorHex: fonte,
+    fontSize: 24,
+    bold: true,
+    horizontalAlign: HorizontalAlign.Center,
+    verticalAlign: VerticalAlign.Center,
+    leftBorder: _bordaFina,
+    rightBorder: _bordaFina,
+    topBorder: _bordaFina,
+    bottomBorder: _bordaFina,
+  );
+
+  CellStyle get _estiloDashboardSecao => CellStyle(
+    backgroundColorHex: ExcelColor.indigo700,
+    fontColorHex: ExcelColor.white,
+    bold: true,
+    horizontalAlign: HorizontalAlign.Left,
+    verticalAlign: VerticalAlign.Center,
+    leftBorder: _bordaFina,
+    rightBorder: _bordaFina,
+    topBorder: _bordaFina,
+    bottomBorder: _bordaFina,
+  );
+
+  CellStyle get _estiloDashboardRotulo => CellStyle(
+    backgroundColorHex: ExcelColor.grey100,
+    fontColorHex: ExcelColor.blueGrey900,
+    bold: true,
+    horizontalAlign: HorizontalAlign.Left,
+    verticalAlign: VerticalAlign.Center,
+    leftBorder: _bordaFina,
+    rightBorder: _bordaFina,
+    topBorder: _bordaFina,
+    bottomBorder: _bordaFina,
+  );
+
+  CellStyle get _estiloGraficoVerde => _estiloGrafico(ExcelColor.green900);
+  CellStyle get _estiloGraficoVermelho => _estiloGrafico(ExcelColor.red900);
+  CellStyle get _estiloGraficoLaranja => _estiloGrafico(ExcelColor.orange900);
+  CellStyle get _estiloGraficoRoxo => _estiloGrafico(ExcelColor.indigo900);
+
+  CellStyle _estiloGrafico(ExcelColor fonte) => CellStyle(
+    backgroundColorHex: ExcelColor.white,
+    fontColorHex: fonte,
+    bold: true,
+    horizontalAlign: HorizontalAlign.Left,
+    verticalAlign: VerticalAlign.Center,
+    leftBorder: _bordaFina,
+    rightBorder: _bordaFina,
+    topBorder: _bordaFina,
+    bottomBorder: _bordaFina,
+  );
+
+  CellStyle get _estiloDashboardTextoCentral => CellStyle(
+    backgroundColorHex: ExcelColor.grey100,
+    fontColorHex: ExcelColor.grey700,
+    italic: true,
+    horizontalAlign: HorizontalAlign.Center,
+    verticalAlign: VerticalAlign.Center,
+    textWrapping: TextWrapping.WrapText,
+    leftBorder: _bordaFina,
+    rightBorder: _bordaFina,
+    topBorder: _bordaFina,
+    bottomBorder: _bordaFina,
+  );
+
+  CellStyle get _estiloDashboardResumoIa => CellStyle(
+    backgroundColorHex: ExcelColor.indigo50,
+    fontColorHex: ExcelColor.indigo900,
+    fontSize: 12,
+    bold: true,
+    horizontalAlign: HorizontalAlign.Left,
+    verticalAlign: VerticalAlign.Center,
+    textWrapping: TextWrapping.WrapText,
+    leftBorder: _bordaFina,
+    rightBorder: _bordaFina,
+    topBorder: _bordaFina,
+    bottomBorder: _bordaFina,
+  );
+
+  CellStyle _estiloDestaque(String tipo) {
+    switch (tipo) {
+      case 'positivo':
+        return _estiloPainelDashboard(
+          fundo: ExcelColor.green100,
+          fonte: ExcelColor.green900,
+        );
+      case 'atencao':
+        return _estiloPainelDashboard(
+          fundo: ExcelColor.orange100,
+          fonte: ExcelColor.orange900,
+        );
+      default:
+        return _estiloPainelDashboard(
+          fundo: ExcelColor.blueGrey100,
+          fonte: ExcelColor.blueGrey900,
+        );
+    }
+  }
+
+  CellStyle _estiloPainelDashboard({
+    required ExcelColor fundo,
+    required ExcelColor fonte,
+  }) => CellStyle(
+    backgroundColorHex: fundo,
+    fontColorHex: fonte,
+    bold: true,
+    horizontalAlign: HorizontalAlign.Left,
+    verticalAlign: VerticalAlign.Center,
+    textWrapping: TextWrapping.WrapText,
+    leftBorder: _bordaFina,
+    rightBorder: _bordaFina,
+    topBorder: _bordaFina,
+    bottomBorder: _bordaFina,
+  );
+
+  CellStyle get _estiloDashboardAlerta => CellStyle(
+    backgroundColorHex: ExcelColor.red50,
+    fontColorHex: ExcelColor.red900,
+    horizontalAlign: HorizontalAlign.Left,
+    verticalAlign: VerticalAlign.Center,
+    textWrapping: TextWrapping.WrapText,
+    leftBorder: _bordaFina,
+    rightBorder: _bordaFina,
+    topBorder: _bordaFina,
+    bottomBorder: _bordaFina,
+  );
+
+  CellStyle get _estiloDashboardRecomendacao => CellStyle(
+    backgroundColorHex: ExcelColor.green50,
+    fontColorHex: ExcelColor.green900,
+    horizontalAlign: HorizontalAlign.Left,
+    verticalAlign: VerticalAlign.Center,
+    textWrapping: TextWrapping.WrapText,
+    leftBorder: _bordaFina,
+    rightBorder: _bordaFina,
+    topBorder: _bordaFina,
+    bottomBorder: _bordaFina,
+  );
 
   CellStyle get _estiloTitulo => CellStyle(
     backgroundColorHex: ExcelColor.indigo700,

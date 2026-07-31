@@ -1,7 +1,15 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
-import '../banco/banco_local.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../servicos/casamento_atual_servico.dart';
 import '../servicos/sessao_servico.dart';
+import 'tela_casamentos.dart';
+import 'tela_criar_conta.dart';
+import 'tela_definir_senha.dart';
+import 'tela_primeiro_acesso_funcionario.dart';
 import 'tela_principal.dart';
 
 class TelaPortaDeEntrada extends StatefulWidget {
@@ -11,122 +19,292 @@ class TelaPortaDeEntrada extends StatefulWidget {
   State<TelaPortaDeEntrada> createState() => _TelaPortaDeEntradaState();
 }
 
-class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada> {
-  final SessaoServico _sessaoServico = SessaoServico.instance;
-  final TextEditingController _senhaController = TextEditingController();
+class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
+    with WidgetsBindingObserver {
+  final _formKey = GlobalKey<FormState>();
+  final _emailController = TextEditingController();
+  final _senhaController = TextEditingController();
+  final Connectivity _connectivity = Connectivity();
 
-  List<UsuarioAppLocalRegistro> _usuarios = [];
+  static const Duration _tempoLimiteRestauracaoOnline = Duration(seconds: 10);
 
-  String? _usuarioSelecionadoId;
-  String _erro = '';
-
-  bool _carregandoUsuarios = true;
-  bool _validandoLogin = false;
+  bool _carregando = false;
   bool _ocultarSenha = true;
+  bool _abrindoProximaTela = false;
+  bool _processandoRetornoAuth = false;
+  String? _erro;
+  StreamSubscription<AuthState>? _mudancasAutenticacao;
 
   @override
   void initState() {
     super.initState();
-    _carregarUsuarios();
+    WidgetsBinding.instance.addObserver(this);
+    _mudancasAutenticacao = Supabase.instance.client.auth.onAuthStateChange
+        .listen(
+          _processarEventoAuth,
+          onError: (Object erro, StackTrace stackTrace) {
+            if (!mounted) return;
+            setState(() {
+              _carregando = false;
+              _erro = 'Não foi possível concluir a autenticação agora.';
+            });
+          },
+        );
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_concluirLoginGooglePendente());
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_concluirLoginGooglePendente());
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _emailController.dispose();
     _senhaController.dispose();
+    _mudancasAutenticacao?.cancel();
     super.dispose();
   }
 
-  /// Carrega a lista do banco SQLite do próprio aparelho.
-  Future<void> _carregarUsuarios() async {
-    try {
-      final usuarios = await _sessaoServico.listarUsuariosAtivos();
-      final ultimoUsuarioId = await _sessaoServico.obterUltimoUsuarioId();
+  Future<void> _processarEventoAuth(AuthState dados) async {
+    if (!mounted) return;
 
-      String? usuarioInicial;
+    if (dados.event == AuthChangeEvent.passwordRecovery) {
+      _abrirDefinirSenha(recuperacao: true);
+      return;
+    }
 
-      final ultimoUsuarioAindaExiste = usuarios.any(
-        (usuario) => usuario.id == ultimoUsuarioId,
-      );
+    if (dados.session == null) return;
 
-      if (ultimoUsuarioAindaExiste) {
-        usuarioInicial = ultimoUsuarioId;
-      }
+    if (dados.event == AuthChangeEvent.signedIn) {
+      await _concluirSessaoAutenticada();
+      return;
+    }
 
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _usuarios = usuarios;
-        _usuarioSelecionadoId = usuarioInicial;
-        _carregandoUsuarios = false;
-      });
-    } catch (erro) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _carregandoUsuarios = false;
-        _erro = 'Não foi possível carregar os usuários: $erro';
-      });
+    if (dados.event == AuthChangeEvent.initialSession) {
+      await _concluirSessaoAutenticada();
     }
   }
 
-  /// Valida o nome e a senha escolhidos.
-  Future<void> _entrar() async {
-    FocusScope.of(context).unfocus();
+  Future<void> _concluirLoginGooglePendente() async {
+    if (_abrindoProximaTela || _processandoRetornoAuth || !mounted) return;
+    if (!await SessaoServico.instance.possuiLoginGooglePendente()) return;
+    if (!SessaoServico.instance.possuiSessaoLocal) return;
+    await _concluirSessaoAutenticada();
+  }
 
-    if (_usuarioSelecionadoId == null) {
+  Future<void> _concluirSessaoAutenticada() async {
+    if (_abrindoProximaTela || _processandoRetornoAuth || !mounted) return;
+    _processandoRetornoAuth = true;
+
+    if (mounted) {
       setState(() {
-        _erro = 'Selecione o seu nome.';
+        _carregando = true;
+        _erro = null;
+      });
+    }
+
+    final sessao = SessaoServico.instance;
+    var restaurouSessaoLocal = false;
+
+    try {
+      restaurouSessaoLocal = await sessao.restaurarSessaoLocal();
+      final possuiCasamentoLocal =
+          CasamentoAtualServico.instance.casamento != null;
+      final semRede = await _estaSemRede();
+
+      if (semRede && restaurouSessaoLocal && possuiCasamentoLocal) {
+        _abrirCasamentoOffline();
+        return;
+      }
+
+      await sessao
+          .sincronizarUsuarioAutenticado()
+          .timeout(_tempoLimiteRestauracaoOnline);
+      if (mounted) _abrirAposAutenticacao();
+    } catch (erro, stackTrace) {
+      debugPrint('ERRO AO CARREGAR CONTA: $erro');
+      debugPrint(stackTrace.toString());
+
+      final possuiCasamentoLocal =
+          CasamentoAtualServico.instance.casamento != null;
+      if (restaurouSessaoLocal && possuiCasamentoLocal) {
+        _abrirCasamentoOffline();
+        return;
+      }
+
+      if (mounted) {
+        setState(() {
+          _erro = restaurouSessaoLocal
+              ? 'Sem conexão. Abra um casamento com internet pelo menos uma vez antes de usá-lo offline.'
+              : 'Não foi possível carregar sua conta. Verifique a conexão e tente novamente.';
+        });
+      }
+    } finally {
+      _processandoRetornoAuth = false;
+      if (mounted && !_abrindoProximaTela) {
+        setState(() => _carregando = false);
+      }
+    }
+  }
+
+  Future<bool> _estaSemRede() async {
+    try {
+      final resultados = await _connectivity.checkConnectivity().timeout(
+        const Duration(seconds: 3),
+      );
+      return resultados.isEmpty ||
+          resultados.every((resultado) => resultado == ConnectivityResult.none);
+    } catch (_) {
+      // Estado desconhecido: tentamos atualizar pelo Supabase e usamos a cópia
+      // offline caso a chamada falhe ou exceda o tempo limite.
+      return false;
+    }
+  }
+
+  void _abrirCasamentoOffline() {
+    if (_abrindoProximaTela || !mounted) return;
+
+    if (SessaoServico.instance.precisaConcluirPrimeiroAcessoFuncionario ||
+        SessaoServico.instance.precisaDefinirSenha) {
+      setState(() {
+        _erro = 'Conecte-se à internet para concluir o primeiro acesso.';
       });
       return;
     }
 
-    if (_senhaController.text.isEmpty) {
-      setState(() {
-        _erro = 'Digite a sua senha.';
-      });
-      return;
-    }
+    _abrindoProximaTela = true;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const TelaPrincipal()),
+    );
+  }
 
+  Future<void> _entrarComGoogle() async {
     setState(() {
-      _validandoLogin = true;
-      _erro = '';
+      _carregando = true;
+      _erro = null;
     });
 
     try {
-      final loginValido = await _sessaoServico.entrar(
-        usuarioId: _usuarioSelecionadoId!,
+      await SessaoServico.instance.entrarComGoogle();
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _erro = 'Não foi possível abrir o login com Google agora.';
+        });
+      }
+    } finally {
+      if (mounted && !_processandoRetornoAuth) {
+        setState(() => _carregando = false);
+      }
+    }
+  }
+
+  Future<void> _entrar() async {
+    FocusScope.of(context).unfocus();
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() {
+      _carregando = true;
+      _erro = null;
+    });
+
+    try {
+      await SessaoServico.instance.entrarComEmail(
+        email: _emailController.text,
         senha: _senhaController.text,
       );
-
-      if (!mounted) {
-        return;
-      }
-
-      if (!loginValido) {
+      if (mounted) _abrirAposAutenticacao();
+    } catch (_) {
+      if (mounted) {
         setState(() {
-          _validandoLogin = false;
-          _erro = _sessaoServico.ultimoErroLogin ?? 'Não foi possível entrar.';
+          _erro = 'E-mail ou senha incorretos. Tente novamente.';
         });
-        return;
       }
+    } finally {
+      if (mounted) setState(() => _carregando = false);
+    }
+  }
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const TelaPrincipal()),
+  Future<void> _recuperarSenha() async {
+    final email = _emailController.text.trim();
+    if (email.isEmpty || !email.contains('@')) {
+      setState(() => _erro = 'Digite seu e-mail para recuperar a senha.');
+      return;
+    }
+
+    try {
+      await SessaoServico.instance.enviarRecuperacaoDeSenha(email);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Enviamos as instruções para seu e-mail.'),
+        ),
       );
-    } catch (erro) {
-      if (!mounted) {
-        return;
+    } catch (_) {
+      if (mounted) {
+        setState(() => _erro = 'Não foi possível enviar a recuperação agora.');
       }
+    }
+  }
 
-      setState(() {
-        _validandoLogin = false;
-        _erro = 'Não foi possível entrar no aplicativo: $erro';
-      });
+  void _abrirAposAutenticacao() {
+    if (_abrindoProximaTela || !mounted) return;
+
+    if (SessaoServico.instance.precisaConcluirPrimeiroAcessoFuncionario) {
+      _abrirPrimeiroAcessoFuncionario();
+      return;
+    }
+
+    if (SessaoServico.instance.precisaDefinirSenha) {
+      _abrirDefinirSenha();
+      return;
+    }
+
+    _abrindoProximaTela = true;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const TelaCasamentos()),
+    );
+  }
+
+  void _abrirPrimeiroAcessoFuncionario() {
+    if (_abrindoProximaTela || !mounted) return;
+    _abrindoProximaTela = true;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => const TelaPrimeiroAcessoFuncionario(),
+      ),
+    );
+  }
+
+  void _abrirDefinirSenha({
+    bool recuperacao = false,
+    bool funcionario = false,
+  }) {
+    if (_abrindoProximaTela || !mounted) return;
+    _abrindoProximaTela = true;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => TelaDefinirSenha(
+          recuperacao: recuperacao,
+          funcionario: funcionario,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _criarConta() async {
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const TelaCriarConta()));
+    if (mounted && SessaoServico.instance.possuiSessaoLocal) {
+      _abrirAposAutenticacao();
     }
   }
 
@@ -136,80 +314,67 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada> {
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(32),
+            padding: const EdgeInsets.all(28),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 450),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(
-                    Icons.favorite,
-                    size: 80,
-                    color: Colors.deepPurple,
-                  ),
-                  const SizedBox(height: 24),
-                  const Text(
-                    'Acesso da Equipe',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Selecione seu nome e digite sua senha.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey.shade700),
-                  ),
-                  const SizedBox(height: 32),
-                  if (_carregandoUsuarios)
-                    const Padding(
-                      padding: EdgeInsets.all(24),
-                      child: CircularProgressIndicator(),
-                    )
-                  else ...[
-                    DropdownButtonFormField<String>(
-                      key: ValueKey('usuario-$_usuarioSelecionadoId'),
-                      initialValue: _usuarioSelecionadoId,
-                      isExpanded: true,
+              constraints: const BoxConstraints(maxWidth: 430),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Icon(
+                      Icons.favorite_rounded,
+                      size: 74,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Gestão de Casamentos',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Entre para acessar seus eventos e sua equipe.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey.shade700),
+                    ),
+                    const SizedBox(height: 32),
+                    TextFormField(
+                      controller: _emailController,
+                      keyboardType: TextInputType.emailAddress,
+                      autofillHints: const [AutofillHints.email],
                       decoration: const InputDecoration(
-                        labelText: 'Quem está usando o aplicativo?',
-                        prefixIcon: Icon(Icons.person),
+                        labelText: 'E-mail',
+                        prefixIcon: Icon(Icons.email_outlined),
                         border: OutlineInputBorder(),
                       ),
-                      items: _usuarios.map((usuario) {
-                        return DropdownMenuItem<String>(
-                          value: usuario.id,
-                          child: Text(usuario.nome),
-                        );
-                      }).toList(),
-                      onChanged: _validandoLogin
-                          ? null
-                          : (valor) {
-                              setState(() {
-                                _usuarioSelecionadoId = valor;
-                                _erro = '';
-                              });
-                            },
+                      validator: (valor) {
+                        final email = valor?.trim() ?? '';
+                        return email.contains('@')
+                            ? null
+                            : 'Digite um e-mail válido.';
+                      },
                     ),
                     const SizedBox(height: 16),
-                    TextField(
+                    TextFormField(
                       controller: _senhaController,
                       obscureText: _ocultarSenha,
-                      enabled: !_validandoLogin,
-                      textInputAction: TextInputAction.done,
-                      onSubmitted: (_) => _entrar(),
+                      autofillHints: const [AutofillHints.password],
+                      onFieldSubmitted: (_) => _entrar(),
                       decoration: InputDecoration(
                         labelText: 'Senha',
-                        prefixIcon: const Icon(Icons.lock),
+                        prefixIcon: const Icon(Icons.lock_outline),
                         border: const OutlineInputBorder(),
                         suffixIcon: IconButton(
                           tooltip: _ocultarSenha
                               ? 'Mostrar senha'
                               : 'Ocultar senha',
-                          onPressed: () {
-                            setState(() {
-                              _ocultarSenha = !_ocultarSenha;
-                            });
-                          },
+                          onPressed: () =>
+                              setState(() => _ocultarSenha = !_ocultarSenha),
                           icon: Icon(
                             _ocultarSenha
                                 ? Icons.visibility
@@ -217,11 +382,13 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada> {
                           ),
                         ),
                       ),
+                      validator: (valor) =>
+                          (valor?.isEmpty ?? true) ? 'Digite sua senha.' : null,
                     ),
-                    if (_erro.isNotEmpty) ...[
+                    if (_erro != null) ...[
                       const SizedBox(height: 12),
                       Text(
-                        _erro,
+                        _erro!,
                         textAlign: TextAlign.center,
                         style: const TextStyle(
                           color: Colors.red,
@@ -231,11 +398,10 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada> {
                     ],
                     const SizedBox(height: 20),
                     SizedBox(
-                      width: double.infinity,
-                      height: 52,
+                      height: 50,
                       child: ElevatedButton.icon(
-                        onPressed: _validandoLogin ? null : _entrar,
-                        icon: _validandoLogin
+                        onPressed: _carregando ? null : _entrar,
+                        icon: _carregando
                             ? const SizedBox(
                                 width: 20,
                                 height: 20,
@@ -244,14 +410,45 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada> {
                                 ),
                               )
                             : const Icon(Icons.login),
-                        label: Text(
-                          _validandoLogin ? 'Entrando...' : 'Entrar',
-                          style: const TextStyle(fontSize: 18),
-                        ),
+                        label: Text(_carregando ? 'Entrando...' : 'Entrar'),
                       ),
                     ),
+                    const SizedBox(height: 14),
+                    SizedBox(
+                      height: 50,
+                      child: OutlinedButton.icon(
+                        onPressed: _carregando ? null : _entrarComGoogle,
+                        icon: const Text(
+                          'G',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF4285F4),
+                          ),
+                        ),
+                        label: const Text('Continuar com Google'),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _carregando ? null : _recuperarSenha,
+                      child: const Text('Esqueci minha senha'),
+                    ),
+                    Text(
+                      'Recebeu um convite para trabalhar? Abra o link recebido no seu e-mail para criar ou acessar sua conta de funcionário.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.grey.shade700,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const Divider(height: 34),
+                    OutlinedButton.icon(
+                      onPressed: _carregando ? null : _criarConta,
+                      icon: const Icon(Icons.person_add_alt_1_outlined),
+                      label: const Text('Criar conta de cerimonialista'),
+                    ),
                   ],
-                ],
+                ),
               ),
             ),
           ),

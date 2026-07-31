@@ -188,10 +188,16 @@ class ConflitoSincronizacao {
   final String? convidadoId;
   final String? mesaId;
   final String? eventoCheckinId;
+  final String? usuarioCheckinId;
   final String? usuarioCheckinNome;
+  final String? usuarioAlteracaoMesaId;
   final String? usuarioAlteracaoMesaNome;
   final Map<String, dynamic> dados;
+  final String? resolucao;
+  final String? resolvidoPorUsuarioId;
+  final DateTime? resolvidoEm;
   final DateTime criadoEm;
+  final DateTime? atualizadoEm;
 
   ConflitoSincronizacao({
     required this.id,
@@ -202,11 +208,95 @@ class ConflitoSincronizacao {
     this.convidadoId,
     this.mesaId,
     this.eventoCheckinId,
+    this.usuarioCheckinId,
     this.usuarioCheckinNome,
+    this.usuarioAlteracaoMesaId,
     this.usuarioAlteracaoMesaNome,
     required this.dados,
+    this.resolucao,
+    this.resolvidoPorUsuarioId,
+    this.resolvidoEm,
     required this.criadoEm,
+    this.atualizadoEm,
   });
+
+  /// IDs dos convidados que devem ficar em evidência enquanto o conflito
+  /// estiver pendente. Para conflitos envolvendo uma mesa excluída, o
+  /// servidor pode registrar vários convidados no campo `dados`.
+  Set<String> get convidadosAfetadosIds {
+    final ids = <String>{};
+
+    final idPrincipal = convidadoId?.trim();
+    if (idPrincipal != null && idPrincipal.isNotEmpty) {
+      ids.add(idPrincipal);
+    }
+
+    for (final valor in _valoresPorChaveRecursiva(dados, const {
+      'convidados_afetados_ids',
+      'convidado_ids_afetados',
+      'affected_guest_ids',
+    })) {
+      ids.addAll(_converterListaDeTextos(valor));
+    }
+
+    return ids;
+  }
+
+  List<String> get convidadosAfetadosNomes {
+    final nomes = <String>[];
+
+    for (final valor in _valoresPorChaveRecursiva(dados, const {
+      'convidados_afetados_nomes',
+      'convidado_nomes_afetados',
+      'affected_guest_names',
+    })) {
+      for (final nome in _converterListaDeTextos(valor)) {
+        if (nome.trim().isNotEmpty && !nomes.contains(nome.trim())) {
+          nomes.add(nome.trim());
+        }
+      }
+    }
+
+    final nomePrincipal = _primeiroTextoRecursivo(dados, const {
+      'convidado_nome',
+      'nome_convidado',
+    });
+
+    if (nomePrincipal != null && !nomes.contains(nomePrincipal)) {
+      nomes.insert(0, nomePrincipal);
+    }
+
+    return nomes;
+  }
+
+  /// Aviso agrupado criado quando uma mesa foi excluída e alguns
+  /// convidados ainda precisam receber uma nova mesa.
+  bool get ehAvisoMesaExcluidaRevisao {
+    return tipo.toLowerCase() == 'mesa_excluida_revisao';
+  }
+
+  bool get envolveMesaExcluida {
+    final tipoNormalizado = tipo.toLowerCase();
+    final origem = _primeiroTextoRecursivo(dados, const {
+      'operacao_origem',
+      'acao_usuario',
+    })?.toLowerCase();
+
+    final possuiExclusaoNoPayload =
+        tipoNormalizado.contains('mesa') &&
+        _primeiroTextoRecursivo(dados, const {'deleted_at'}) != null;
+
+    return tipoNormalizado.contains('mesa_excluida') ||
+        tipoNormalizado.contains('mesa_removida') ||
+        origem == 'exclusao_mesa' ||
+        origem == 'excluiu_mesa' ||
+        possuiExclusaoNoPayload ||
+        _primeiroTextoRecursivo(dados, const {
+              'mesa_excluida_em_servidor',
+              'mesa_deleted_at',
+            }) !=
+            null;
+  }
 
   factory ConflitoSincronizacao.fromMap(Map<String, dynamic> map) {
     final dadosBrutos = map['dados'];
@@ -220,16 +310,123 @@ class ConflitoSincronizacao {
       convidadoId: map['convidado_id']?.toString(),
       mesaId: map['mesa_id']?.toString(),
       eventoCheckinId: map['evento_checkin_id']?.toString(),
+      usuarioCheckinId: map['usuario_checkin_id']?.toString(),
       usuarioCheckinNome: map['usuario_checkin_nome']?.toString(),
+      usuarioAlteracaoMesaId: map['usuario_alteracao_mesa_id']?.toString(),
       usuarioAlteracaoMesaNome: map['usuario_alteracao_mesa_nome']?.toString(),
       dados: dadosBrutos is Map
           ? Map<String, dynamic>.from(dadosBrutos)
           : <String, dynamic>{},
+      resolucao: map['resolucao']?.toString(),
+      resolvidoPorUsuarioId: map['resolvido_por_usuario_id']?.toString(),
+      resolvidoEm: DateTime.tryParse(
+        map['resolvido_em']?.toString() ?? '',
+      )?.toLocal(),
       criadoEm:
           DateTime.tryParse(map['created_at']?.toString() ?? '')?.toLocal() ??
           DateTime.now(),
+      atualizadoEm: DateTime.tryParse(
+        map['updated_at']?.toString() ?? '',
+      )?.toLocal(),
     );
   }
+}
+
+/// Erro de uma operação local que não conseguiu ser enviada ao Supabase.
+///
+/// O stream desta classe é usado pela Recepção para colocar imediatamente no
+/// topo os convidados cuja alteração precisa de atenção.
+class ErroSincronizacaoLocal {
+  final String id;
+  final String entidade;
+  final String entidadeId;
+  final String tipoOperacao;
+  final Set<String> convidadosAfetadosIds;
+  final String mensagem;
+  final DateTime criadoEm;
+
+  const ErroSincronizacaoLocal({
+    required this.id,
+    required this.entidade,
+    required this.entidadeId,
+    required this.tipoOperacao,
+    required this.convidadosAfetadosIds,
+    required this.mensagem,
+    required this.criadoEm,
+  });
+}
+
+Iterable<dynamic> _valoresPorChaveRecursiva(
+  dynamic valor,
+  Set<String> chaves,
+) sync* {
+  if (valor is Map) {
+    for (final entrada in valor.entries) {
+      final chave = entrada.key.toString();
+      if (chaves.contains(chave)) {
+        yield entrada.value;
+      }
+      yield* _valoresPorChaveRecursiva(entrada.value, chaves);
+    }
+    return;
+  }
+
+  if (valor is Iterable) {
+    for (final item in valor) {
+      yield* _valoresPorChaveRecursiva(item, chaves);
+    }
+  }
+}
+
+String? _primeiroTextoRecursivo(dynamic valor, Set<String> chaves) {
+  for (final encontrado in _valoresPorChaveRecursiva(valor, chaves)) {
+    final texto = encontrado?.toString().trim();
+    if (texto != null && texto.isNotEmpty && texto.toLowerCase() != 'null') {
+      return texto;
+    }
+  }
+
+  return null;
+}
+
+List<String> _converterListaDeTextos(dynamic valor) {
+  if (valor == null) {
+    return const [];
+  }
+
+  if (valor is Iterable) {
+    return valor
+        .map((item) => item.toString().trim())
+        .where((item) => item.isNotEmpty && item.toLowerCase() != 'null')
+        .toList();
+  }
+
+  final texto = valor.toString().trim();
+  if (texto.isEmpty || texto.toLowerCase() == 'null') {
+    return const [];
+  }
+
+  if (texto.startsWith('[') && texto.endsWith(']')) {
+    final conteudo = texto.substring(1, texto.length - 1).trim();
+    if (conteudo.isEmpty) return const [];
+    return conteudo
+        .split(',')
+        .map((item) => item.replaceAll('"', '').trim())
+        .where((item) => item.isNotEmpty)
+        .toList();
+  }
+
+  if (texto.startsWith('{') && texto.endsWith('}')) {
+    final conteudo = texto.substring(1, texto.length - 1).trim();
+    if (conteudo.isEmpty) return const [];
+    return conteudo
+        .split(',')
+        .map((item) => item.replaceAll('"', '').trim())
+        .where((item) => item.isNotEmpty)
+        .toList();
+  }
+
+  return [texto];
 }
 
 int _converterInteiro(dynamic valor) {

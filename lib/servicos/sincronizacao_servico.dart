@@ -8,9 +8,12 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../banco/banco_instancia.dart';
 import '../banco/banco_local.dart';
+import 'controle_versao_lista_servico.dart';
+import 'casamento_atual_servico.dart';
 import 'dispositivo_servico.dart';
 import 'envio_pendencias_servico.dart';
 import 'sessao_servico.dart';
+import 'versao_registro_servico.dart';
 
 enum StatusSincronizacao {
   aguardando,
@@ -34,6 +37,13 @@ class ResultadoSincronizacao {
   final int mensagens;
   final int eventos;
 
+  /// Indica que o servidor publicou uma nova versão da lista e que a cópia
+  /// local anterior precisou ser descartada antes do download.
+  final bool listaFoiRedefinida;
+  final bool primeiraAtivacaoControleLista;
+  final int versaoLista;
+  final int operacoesLocaisDescartadas;
+
   const ResultadoSincronizacao({
     required this.sucesso,
     required this.semConexao,
@@ -44,10 +54,52 @@ class ResultadoSincronizacao {
     this.staffs = 0,
     this.mensagens = 0,
     this.eventos = 0,
+    this.listaFoiRedefinida = false,
+    this.primeiraAtivacaoControleLista = false,
+    this.versaoLista = 0,
+    this.operacoesLocaisDescartadas = 0,
   });
 
   int get totalRegistros {
     return usuarios + mesas + convidados + staffs + mensagens + eventos;
+  }
+}
+
+class _ListaAlteradaDuranteDownloadException implements Exception {
+  const _ListaAlteradaDuranteDownloadException();
+
+  @override
+  String toString() {
+    return 'A versão da lista mudou durante o download.';
+  }
+}
+
+class _PendenciasNaoEnviadasAntesDaAtualizacaoException
+    implements Exception {
+  final int quantidade;
+  final String detalhes;
+
+  const _PendenciasNaoEnviadasAntesDaAtualizacaoException({
+    required this.quantidade,
+    required this.detalhes,
+  });
+
+  @override
+  String toString() {
+    return '$quantidade alteração(ões) local(is) não puderam ser enviadas '
+        'antes da atualização da lista.\n$detalhes';
+  }
+}
+
+class _PendenciasCriadasDuranteAtualizacaoException implements Exception {
+  final int quantidade;
+
+  const _PendenciasCriadasDuranteAtualizacaoException(this.quantidade);
+
+  @override
+  String toString() {
+    return '$quantidade nova(s) alteração(ões) local(is) foram criada(s) '
+        'enquanto a nova lista estava sendo baixada.';
   }
 }
 
@@ -119,9 +171,7 @@ class SincronizacaoServico extends ChangeNotifier {
         );
 
         _ultimoResultado = resultado;
-
         _alterarStatus(StatusSincronizacao.offline, resultado.mensagem);
-
         return resultado;
       }
 
@@ -133,82 +183,183 @@ class SincronizacaoServico extends ChangeNotifier {
       await DispositivoServico.instance.obterOuCriarId();
 
       _alterarStatus(StatusSincronizacao.sincronizando, 'Validando sessão...');
-
       await SessaoServico.instance.exigirSessaoAtivaParaSincronizar();
 
-      // O controle em memória (_sincronizando) já impede execuções paralelas.
-      // Não gravamos o marcador de início no SQLite aqui, porque esta escrita
-      // não é necessária para enviar os dados e não deve bloquear a conexão.
       _alterarStatus(
         StatusSincronizacao.sincronizando,
-        'Enviando alterações pendentes...',
+        'Validando a versão da lista oficial...',
+      );
+
+      final controleVersao = await ControleVersaoListaServico.instance
+          .validarAntesDoEnvio();
+      final listaMudou = controleVersao.dadosLocaisRedefinidos;
+      final precisaConfirmarVersao =
+          controleVersao.versaoLocalAnterior != controleVersao.versaoServidor;
+
+      _alterarStatus(
+        StatusSincronizacao.sincronizando,
+        listaMudou
+            ? 'Enviando alterações pendentes antes de atualizar a lista...'
+            : 'Enviando alterações pendentes...',
       );
 
       final resultadoEnvio = await EnvioPendenciasServico.instance
           .enviarPendencias();
 
-      _alterarStatus(StatusSincronizacao.sincronizando, 'Baixando usuários...');
+      if (resultadoEnvio.comErro > 0) {
+        _ultimoErroTecnico = resultadoEnvio.detalhesErros.isNotEmpty
+            ? resultadoEnvio.detalhesErros.join(
+                '\n\n--------------------\n\n',
+              )
+            : resultadoEnvio.primeiroErro ??
+                  'Uma ou mais alterações locais não puderam ser enviadas.';
 
+        try {
+          await _registrarErroSincronizacao(_ultimoErroTecnico!);
+        } catch (_) {
+          // A falha ao registrar o diagnóstico não deve interromper o
+          // restante da sincronização.
+        }
+
+        if (listaMudou) {
+          throw _PendenciasNaoEnviadasAntesDaAtualizacaoException(
+            quantidade: resultadoEnvio.comErro,
+            detalhes: _ultimoErroTecnico!,
+          );
+        }
+      }
+
+      if (listaMudou) {
+        _alterarStatus(
+          StatusSincronizacao.sincronizando,
+          'Alterações locais protegidas. Baixando a nova lista...',
+        );
+      }
+
+      _alterarStatus(StatusSincronizacao.sincronizando, 'Baixando usuários...');
       final usuarios = await _buscarTodasAsLinhas('usuarios_app');
 
       _alterarStatus(StatusSincronizacao.sincronizando, 'Baixando mesas...');
-
       final mesas = await _buscarTodasAsLinhas('mesas');
 
       _alterarStatus(
         StatusSincronizacao.sincronizando,
         'Baixando convidados...',
       );
-
       final convidados = await _buscarTodasAsLinhas('convidados');
 
       _alterarStatus(StatusSincronizacao.sincronizando, 'Baixando equipe...');
-
       final staffs = await _buscarTodasAsLinhas('staff');
 
       _alterarStatus(
         StatusSincronizacao.sincronizando,
         'Baixando mensagens...',
       );
-
       final mensagens = await _buscarTodasAsLinhas('chat');
 
       _alterarStatus(
         StatusSincronizacao.sincronizando,
         'Baixando histórico de check-in...',
       );
-
       final eventos = await _buscarTodasAsLinhas('eventos_checkin');
 
       _alterarStatus(
         StatusSincronizacao.sincronizando,
-        'Salvando os dados no celular...',
+        'Carregando conflitos pendentes...',
+      );
+      final conflitosConvidadosRemovidos =
+          await _buscarConflitosConvidadosRemovidosPendentes();
+
+      if (precisaConfirmarVersao) {
+        _alterarStatus(
+          StatusSincronizacao.sincronizando,
+          'Confirmando a versão da lista baixada...',
+        );
+
+        final versaoDepoisDoDownload = await ControleVersaoListaServico.instance
+            .obterVersaoServidor();
+
+        if (versaoDepoisDoDownload != controleVersao.versaoServidor) {
+          throw const _ListaAlteradaDuranteDownloadException();
+        }
+      }
+
+      _alterarStatus(
+        StatusSincronizacao.sincronizando,
+        listaMudou
+            ? 'Instalando a nova lista com segurança...'
+            : 'Salvando os dados no celular...',
       );
 
-      final contextoPendencias = await _carregarContextoPendencias();
+      final contextoPendencias = listaMudou
+          ? const _ContextoPendencias(
+              chavesPendentes: <String>{},
+              convidadosComCheckinPendente: <String>{},
+              mesasReferenciadasPorPendencias: <String>{},
+            )
+          : await _carregarContextoPendencias();
+
+      const operacoesLocaisDescartadas = 0;
 
       await _banco.transaction(() async {
+        if (listaMudou) {
+          final pendenciasCriadasDuranteDownload = await _banco
+              .select(_banco.operacoesPendentesLocais)
+              .get();
+
+          if (pendenciasCriadasDuranteDownload.isNotEmpty) {
+            throw _PendenciasCriadasDuranteAtualizacaoException(
+              pendenciasCriadasDuranteDownload.length,
+            );
+          }
+
+          // A substituição só começa depois que:
+          // 1. todas as pendências anteriores foram processadas pelo servidor;
+          // 2. todos os dados novos foram baixados;
+          // 3. foi confirmado que nenhuma nova pendência surgiu durante o
+          //    download.
+          //
+          // A fila de operações nunca é apagada por uma atualização de lista.
+          // Se qualquer gravação falhar, a transação inteira é revertida e a
+          // lista antiga continua disponível.
+          await _banco.delete(_banco.eventosCheckinLocais).go();
+          await _banco.delete(_banco.mensagensChatLocais).go();
+          await _banco.delete(_banco.staffsLocais).go();
+          await _banco.delete(_banco.convidadosLocais).go();
+          await _banco.delete(_banco.mesasLocais).go();
+          await _banco.delete(_banco.sincronizacoesLocais).go();
+          await VersaoRegistroServico.instance.limparTodasAsVersoes();
+        }
+
         await _salvarUsuarios(usuarios);
-
         await _salvarMesas(mesas, contextoPendencias);
-
         await _salvarConvidados(convidados, contextoPendencias);
-
         await _salvarStaffs(staffs, contextoPendencias);
-
         await _salvarMensagens(mensagens, contextoPendencias);
-
         await _salvarEventos(eventos, contextoPendencias);
 
         await _reconciliarMesas(mesas, contextoPendencias);
-
         await _reconciliarEventos(eventos, contextoPendencias);
-
         await _reconciliarConvidados(convidados, contextoPendencias);
+
+        // Um convidado removido pela nova lista continua visível enquanto o
+        // conflito aguarda a decisão do administrador. O registro é mantido
+        // somente no SQLite, destacado como conflito. Quando o administrador
+        // escolher manter a remoção, o conflito deixa de estar pendente e o
+        // próximo sincronismo remove o convidado. Quando escolher restaurar,
+        // o registro oficial volta do Supabase normalmente.
+        await _preservarConvidadosComConflito(
+          conflitosConvidadosRemovidos,
+        );
+
+        if (precisaConfirmarVersao) {
+          await ControleVersaoListaServico.instance.confirmarVersaoLocal(
+            controleVersao.versaoServidor,
+          );
+        }
       });
 
       final agora = DateTime.now().toUtc();
-
       await _registrarFimSincronizacao(agora);
 
       final mensagemFinal = _montarMensagemSucesso(
@@ -220,6 +371,9 @@ class SincronizacaoServico extends ChangeNotifier {
         eventos: eventos.length,
         operacoesEnviadas: resultadoEnvio.enviadas,
         operacoesComErro: resultadoEnvio.comErro,
+        listaFoiRedefinida: listaMudou,
+        primeiraAtivacaoControleLista: controleVersao.primeiraAtivacao,
+        versaoLista: controleVersao.versaoServidor,
       );
 
       final terminouSemErro = resultadoEnvio.comErro == 0;
@@ -233,6 +387,10 @@ class SincronizacaoServico extends ChangeNotifier {
         staffs: staffs.length,
         mensagens: mensagens.length,
         eventos: eventos.length,
+        listaFoiRedefinida: listaMudou,
+        primeiraAtivacaoControleLista: controleVersao.primeiraAtivacao,
+        versaoLista: controleVersao.versaoServidor,
+        operacoesLocaisDescartadas: operacoesLocaisDescartadas,
         mensagem: mensagemFinal,
       );
 
@@ -251,6 +409,26 @@ class SincronizacaoServico extends ChangeNotifier {
       return _tratarErro(erro, erro.mensagem);
     } on ValidacaoSessaoIndisponivelException catch (erro) {
       return _tratarErro(erro, erro.mensagem);
+    } on _PendenciasNaoEnviadasAntesDaAtualizacaoException catch (erro) {
+      return _tratarErro(
+        erro,
+        'A nova lista não foi instalada porque '
+        '${erro.quantidade} alteração(ões) local(is) ainda não puderam ser '
+        'processadas pelo servidor. A lista anterior foi mantida no celular.',
+      );
+    } on _PendenciasCriadasDuranteAtualizacaoException catch (erro) {
+      return _tratarErro(
+        erro,
+        'Uma nova alteração foi feita enquanto a lista estava sendo baixada. '
+        'A lista anterior foi mantida. Sincronize novamente para enviar a '
+        'alteração antes de instalar a nova lista.',
+      );
+    } on _ListaAlteradaDuranteDownloadException catch (erro) {
+      return _tratarErro(
+        erro,
+        'A lista oficial mudou durante o download. '
+        'A cópia antiga foi mantida no celular. Tente sincronizar novamente.',
+      );
     } on TimeoutException catch (erro) {
       return _tratarErro(
         erro,
@@ -308,12 +486,20 @@ class SincronizacaoServico extends ChangeNotifier {
     while (true) {
       final fim = inicio + _tamanhoPagina - 1;
 
-      final resposta = await _supabase
-          .from(nomeTabela)
-          .select()
-          .order('created_at', ascending: true)
-          .range(inicio, fim)
-          .timeout(_tempoLimitePorPagina);
+      final consulta = _tabelaPertenceAoCasamento(nomeTabela)
+          ? _supabase
+                .from(nomeTabela)
+                .select()
+                .eq('casamento_id', CasamentoAtualServico.instance.casamentoId)
+                .order('created_at', ascending: true)
+                .range(inicio, fim)
+          : _supabase
+                .from(nomeTabela)
+                .select()
+                .order('created_at', ascending: true)
+                .range(inicio, fim);
+
+      final resposta = await consulta.timeout(_tempoLimitePorPagina);
 
       final pagina = resposta
           .map((registro) => Map<String, dynamic>.from(registro))
@@ -329,6 +515,18 @@ class SincronizacaoServico extends ChangeNotifier {
     }
 
     return todasAsLinhas;
+  }
+
+  bool _tabelaPertenceAoCasamento(String tabela) {
+    return const {
+      'mesas',
+      'convidados',
+      'staff',
+      'chat',
+      'eventos_checkin',
+      'conflitos_sincronizacao',
+      'controle_lista',
+    }.contains(tabela);
   }
 
   /// Lê as operações ainda não enviadas para evitar que uma cópia do
@@ -396,6 +594,226 @@ class SincronizacaoServico extends ChangeNotifier {
     );
   }
 
+  Future<List<Map<String, dynamic>>>
+  _buscarConflitosConvidadosRemovidosPendentes() async {
+    final resposta = await _supabase
+        .from('conflitos_sincronizacao')
+        .select()
+        .eq('casamento_id', CasamentoAtualServico.instance.casamentoId)
+        .eq('status', 'pendente')
+        .eq('tipo', 'convidado_inexistente_durante_checkin')
+        .order('created_at', ascending: true)
+        .timeout(_tempoLimitePorPagina);
+
+    return resposta
+        .map((registro) => Map<String, dynamic>.from(registro))
+        .toList();
+  }
+
+  Future<void> _preservarConvidadosComConflito(
+    List<Map<String, dynamic>> conflitos,
+  ) async {
+    for (final conflito in conflitos) {
+      final dados = _converterMapaJson(conflito['dados']);
+      final convidadoId = _primeiroTextoNaoVazio([
+        conflito['convidado_id'],
+        dados['convidado_id'],
+      ]);
+      final eventoId = _primeiroTextoNaoVazio([
+        conflito['evento_checkin_id'],
+        dados['evento_checkin_id'],
+      ]);
+      final usuarioId = _primeiroTextoNaoVazio([
+        conflito['usuario_checkin_id'],
+        dados['usuario_local_id'],
+      ]);
+      final nome = _primeiroTextoNaoVazio([
+        dados['convidado_nome'],
+        _primeiroItemLista(dados['convidados_afetados_nomes']),
+      ]);
+
+      if (convidadoId == null ||
+          eventoId == null ||
+          usuarioId == null ||
+          nome == null) {
+        debugPrint(
+          'Conflito de convidado removido sem dados suficientes para '
+          'preservação local: ${conflito['id']}',
+        );
+        continue;
+      }
+
+      final mesaIdAntiga = _primeiroTextoNaoVazio([
+        conflito['mesa_id'],
+        dados['mesa_id_contexto'],
+        dados['mesa_original_id'],
+      ]);
+      final mesaNumero = _lerInteiroOpcional(dados['mesa_numero_contexto']);
+      final mesaDestinoId = await _encontrarMesaLocalDoConflito(
+        mesaIdAntiga: mesaIdAntiga,
+        mesaNumero: mesaNumero,
+      );
+
+      final estadoResultante = _lerBooleano(
+        dados['estado_resultante'],
+        padrao: false,
+      );
+      final dataDispositivo = _lerData(
+        dados['data_dispositivo'],
+        padrao: _lerData(
+          conflito['created_at'],
+          padrao: DateTime.now().toUtc(),
+        ),
+      );
+      final sequenciaDispositivo = _lerInteiro(
+        dados['sequencia_dispositivo'],
+        padrao: 1,
+      );
+      final dispositivoId = _primeiroTextoNaoVazio([
+            dados['dispositivo_id'],
+          ]) ??
+          'conflito-${conflito['id']}';
+      final tipoAcao = _primeiroTextoNaoVazio([
+            dados['tipo_acao'],
+          ]) ??
+          (estadoResultante ? 'confirmou_chegada' : 'removeu_chegada');
+      final eventosBaseJson = _converterListaParaJson(dados['eventos_base']);
+      final observacao = _lerTextoOpcional(dados['observacao']);
+      final dataServidor = _lerDataOpcional(conflito['created_at']);
+      final agora = DateTime.now().toUtc();
+
+      await _banco
+          .into(_banco.convidadosLocais)
+          .insertOnConflictUpdate(
+            ConvidadosLocaisCompanion.insert(
+              id: convidadoId,
+              nome: nome,
+              mesaId: Value(mesaDestinoId),
+              chegou: Value(estadoResultante),
+              temConflito: const Value(true),
+              eventosAtuaisJson: Value(jsonEncode([eventoId])),
+              criadoEm: dataDispositivo,
+              atualizadoEm: agora,
+              excluido: const Value(false),
+            ),
+          );
+
+      await _banco
+          .into(_banco.eventosCheckinLocais)
+          .insertOnConflictUpdate(
+            EventosCheckinLocaisCompanion.insert(
+              id: eventoId,
+              convidadoId: convidadoId,
+              usuarioId: usuarioId,
+              tipoAcao: tipoAcao,
+              estadoResultante: estadoResultante,
+              eventosBaseJson: Value(eventosBaseJson),
+              dataDispositivo: dataDispositivo,
+              sequenciaDispositivo: sequenciaDispositivo,
+              dispositivoId: dispositivoId,
+              dataServidor: Value(dataServidor),
+              observacao: Value(observacao),
+              sincronizado: const Value(true),
+            ),
+          );
+    }
+  }
+
+  Future<String?> _encontrarMesaLocalDoConflito({
+    required String? mesaIdAntiga,
+    required int? mesaNumero,
+  }) async {
+    if (mesaIdAntiga != null) {
+      final porId = _banco.select(_banco.mesasLocais)
+        ..where(
+          (tabela) =>
+              tabela.id.equals(mesaIdAntiga) &
+              tabela.excluido.equals(false),
+        );
+
+      final mesa = await porId.getSingleOrNull();
+      if (mesa != null) {
+        return mesa.id;
+      }
+    }
+
+    if (mesaNumero != null) {
+      final porNumero = _banco.select(_banco.mesasLocais)
+        ..where(
+          (tabela) =>
+              tabela.numero.equals(mesaNumero) &
+              tabela.excluido.equals(false),
+        )
+        ..orderBy([(tabela) => OrderingTerm.asc(tabela.criadoEm)])
+        ..limit(1);
+
+      final mesa = await porNumero.getSingleOrNull();
+      if (mesa != null) {
+        return mesa.id;
+      }
+    }
+
+    return null;
+  }
+
+  Map<String, dynamic> _converterMapaJson(dynamic valor) {
+    if (valor is Map<String, dynamic>) {
+      return valor;
+    }
+
+    if (valor is Map) {
+      return Map<String, dynamic>.from(valor);
+    }
+
+    if (valor is String && valor.trim().isNotEmpty) {
+      try {
+        final convertido = jsonDecode(valor);
+        if (convertido is Map) {
+          return Map<String, dynamic>.from(convertido);
+        }
+      } catch (_) {
+        // Um conflito malformado é ignorado individualmente.
+      }
+    }
+
+    return <String, dynamic>{};
+  }
+
+  String? _primeiroTextoNaoVazio(List<dynamic> valores) {
+    for (final valor in valores) {
+      final texto = valor?.toString().trim();
+      if (texto != null && texto.isNotEmpty && texto != 'null') {
+        return texto;
+      }
+    }
+
+    return null;
+  }
+
+  dynamic _primeiroItemLista(dynamic valor) {
+    if (valor is List && valor.isNotEmpty) {
+      return valor.first;
+    }
+
+    return null;
+  }
+
+  int? _lerInteiroOpcional(dynamic valor) {
+    if (valor == null) {
+      return null;
+    }
+
+    if (valor is int) {
+      return valor;
+    }
+
+    if (valor is num) {
+      return valor.toInt();
+    }
+
+    return int.tryParse(valor.toString());
+  }
+
   Future<void> _salvarUsuarios(List<Map<String, dynamic>> registros) async {
     for (final registro in registros) {
       final id = _lerTextoObrigatorio(registro['id']);
@@ -448,6 +866,14 @@ class SincronizacaoServico extends ChangeNotifier {
               excluido: Value(registro['deleted_at'] != null),
             ),
           );
+
+      await VersaoRegistroServico.instance.salvarVersaoConfirmada(
+        entidade: 'mesa',
+        id: id,
+        updatedAt:
+            registro['updated_at']?.toString() ??
+            atualizadoEm.toIso8601String(),
+      );
     }
   }
 
@@ -497,6 +923,14 @@ class SincronizacaoServico extends ChangeNotifier {
               excluido: Value(registro['deleted_at'] != null),
             ),
           );
+
+      await VersaoRegistroServico.instance.salvarVersaoConfirmada(
+        entidade: 'convidado',
+        id: id,
+        updatedAt:
+            registro['updated_at']?.toString() ??
+            atualizadoEm.toIso8601String(),
+      );
     }
   }
 
@@ -659,6 +1093,11 @@ class SincronizacaoServico extends ChangeNotifier {
       await (_banco.delete(
         _banco.mesasLocais,
       )..where((tabela) => tabela.id.equals(mesa.id))).go();
+
+      await VersaoRegistroServico.instance.removerVersao(
+        entidade: 'mesa',
+        id: mesa.id,
+      );
     }
   }
 
@@ -697,6 +1136,11 @@ class SincronizacaoServico extends ChangeNotifier {
       await (_banco.delete(
         _banco.convidadosLocais,
       )..where((tabela) => tabela.id.equals(convidado.id))).go();
+
+      await VersaoRegistroServico.instance.removerVersao(
+        entidade: 'convidado',
+        id: convidado.id,
+      );
     }
   }
 
@@ -827,6 +1271,9 @@ class SincronizacaoServico extends ChangeNotifier {
     required int eventos,
     required int operacoesEnviadas,
     required int operacoesComErro,
+    required bool listaFoiRedefinida,
+    required bool primeiraAtivacaoControleLista,
+    required int versaoLista,
   }) {
     String resumoEnvio;
 
@@ -840,7 +1287,17 @@ class SincronizacaoServico extends ChangeNotifier {
           '$operacoesComErro continuam pendentes.';
     }
 
-    return 'Sincronizado: '
+    var avisoLista = '';
+
+    if (listaFoiRedefinida) {
+      final descricao = primeiraAtivacaoControleLista
+          ? 'Controle da lista ativado'
+          : 'Nova lista oficial instalada com segurança';
+
+      avisoLista = '$descricao (versão $versaoLista). ';
+    }
+
+    return '${avisoLista}Sincronizado: '
         '$usuarios usuários, '
         '$mesas mesas, '
         '$convidados convidados, '

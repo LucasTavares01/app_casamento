@@ -13,12 +13,14 @@ class ResultadoEnvioPendencias {
   final int enviadas;
   final int comErro;
   final String? primeiroErro;
+  final List<String> detalhesErros;
 
   const ResultadoEnvioPendencias({
     required this.totalEncontradas,
     required this.enviadas,
     required this.comErro,
     this.primeiroErro,
+    this.detalhesErros = const [],
   });
 
   bool get tudoEnviado => comErro == 0;
@@ -64,6 +66,7 @@ class EnvioPendenciasServico {
     var quantidadeEnviada = 0;
     var quantidadeComErro = 0;
     String? primeiroErro;
+    final detalhesErros = <String>[];
 
     for (final operacao in pendencias) {
       try {
@@ -78,6 +81,7 @@ class EnvioPendenciasServico {
         quantidadeComErro++;
 
         primeiroErro ??= erro.toString();
+        detalhesErros.add(_montarDetalhesErro(operacao, erro));
 
         await _marcarComoErro(operacao: operacao, erro: erro);
       }
@@ -88,7 +92,25 @@ class EnvioPendenciasServico {
       enviadas: quantidadeEnviada,
       comErro: quantidadeComErro,
       primeiroErro: primeiroErro,
+      detalhesErros: detalhesErros,
     );
+  }
+
+  String _montarDetalhesErro(
+    OperacaoPendenteLocalRegistro operacao,
+    Object erro,
+  ) {
+    var mensagemErro = erro.toString();
+
+    if (mensagemErro.length > 2000) {
+      mensagemErro = mensagemErro.substring(0, 2000);
+    }
+
+    return 'Operação: ${operacao.tipoOperacao}\n'
+        'Entidade: ${operacao.entidade}\n'
+        'ID do registro: ${operacao.entidadeId}\n'
+        'Tentativa: ${operacao.tentativas + 1}\n'
+        'Erro: $mensagemErro';
   }
 
   /// Busca todas as operações e organiza pela dependência das tabelas.
@@ -186,7 +208,7 @@ class EnvioPendenciasServico {
   }) async {
     await _supabase
         .rpc(
-          'aplicar_operacao_entidade_v1',
+          'aplicar_operacao_entidade_v2',
           params: {
             'p_operacao_id': operacao.id,
             'p_entidade': entidade,
@@ -212,13 +234,24 @@ class EnvioPendenciasServico {
   }
 
   /// Envia um evento utilizando a função criada no Supabase.
+  ///
+  /// A versão v5 recebe o casamento e o nome do convidado diretamente do payload. Isso permite
+  /// registrar um conflito mesmo quando a nova lista oficial já removeu o
+  /// convidado e a mesa conhecidos pelo aparelho offline.
   Future<void> _enviarEventoCheckin(Map<String, dynamic> payload) async {
+    final eventoId = _lerTextoObrigatorio(payload['id']);
+    final convidadoId = _lerTextoObrigatorio(payload['convidado_id']);
+
     final resposta = await _supabase
         .rpc(
-          'registrar_evento_checkin_v2',
+          'registrar_evento_checkin_v5',
           params: {
-            'p_id': _lerTextoObrigatorio(payload['id']),
-            'p_convidado_id': _lerTextoObrigatorio(payload['convidado_id']),
+            'p_id': eventoId,
+            'p_casamento_id': _lerTextoObrigatorio(payload['casamento_id']),
+            'p_convidado_id': convidadoId,
+            'p_convidado_nome_contexto': _lerTextoObrigatorio(
+              payload['convidado_nome_contexto'],
+            ),
             'p_usuario_id': _lerTextoObrigatorio(payload['usuario_id']),
             'p_tipo_acao': _lerTextoObrigatorio(payload['tipo_acao']),
             'p_estado_resultante': _lerBooleano(payload['estado_resultante']),
@@ -240,11 +273,23 @@ class EnvioPendenciasServico {
 
     final respostaConvertida = _converterRespostaRpc(resposta);
 
+    final eventoRegistrado = _lerBooleano(
+      respostaConvertida['evento_registrado'],
+    );
+
+    final conflitoId = respostaConvertida['conflito_id']?.toString();
+    final conflitoCriado = conflitoId != null && conflitoId.isNotEmpty;
+
+    if (!eventoRegistrado && !conflitoCriado) {
+      throw StateError(
+        'O servidor não registrou o check-in nem criou um conflito. '
+        'A operação continuará pendente para evitar perda de dados.',
+      );
+    }
+
     final dataServidor = DateTime.tryParse(
       respostaConvertida['data_servidor']?.toString() ?? '',
     )?.toUtc();
-
-    final eventoId = _lerTextoObrigatorio(payload['id']);
 
     await (_banco.update(
       _banco.eventosCheckinLocais,
@@ -254,6 +299,16 @@ class EnvioPendenciasServico {
         dataServidor: Value(dataServidor),
       ),
     );
+
+    if (conflitoCriado) {
+      await (_banco.update(
+        _banco.convidadosLocais,
+      )..where((tabela) => tabela.id.equals(convidadoId))).write(
+        const ConvidadosLocaisCompanion(
+          temConflito: Value(true),
+        ),
+      );
+    }
   }
 
   Map<String, dynamic> _converterRespostaRpc(dynamic resposta) {

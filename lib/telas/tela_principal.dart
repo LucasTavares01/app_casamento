@@ -1,9 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../modelos/modelos.dart';
-import '../servicos/relatorio_excel_servico.dart';
+import '../servicos/casamento_atual_servico.dart';
 import '../servicos/sessao_servico.dart';
 import '../servicos/supabase_servico.dart';
 import '../servicos/sincronizacao_servico.dart';
@@ -13,6 +14,9 @@ import 'aba_mesas.dart';
 import 'aba_recepcao.dart';
 import 'porta_entrada.dart';
 import 'tela_conflitos.dart';
+import 'tela_casamentos.dart';
+import 'tela_conta.dart';
+import 'tela_importacao_lista.dart';
 
 class TelaPrincipal extends StatefulWidget {
   const TelaPrincipal({super.key});
@@ -28,24 +32,13 @@ class _TelaPrincipalState extends State<TelaPrincipal>
 
   late final Stream<List<ConflitoSincronizacao>> _streamConflitos;
 
-  static const Duration _tempoExibicaoStatusSincronizacao = Duration(
-    seconds: 4,
-  );
 
-  Timer? _temporizadorOcultarSincronizacao;
   StreamSubscription<String>? _assinaturaSessaoRevogada;
+  StreamSubscription<bool>? _assinaturaAcessoCasamento;
   bool _tratandoSessaoRevogada = false;
+  bool _tratandoAcessoRevogado = false;
 
   int _abaSelecionada = 0;
-  bool _mostrarBarraSincronizacao = false;
-  bool _gerandoRelatorio = false;
-
-  final List<Widget> _telas = [
-    const AbaRecepcao(),
-    const AbaMesas(),
-    const AbaCadastro(),
-    const AbaEquipe(),
-  ];
 
   @override
   void initState() {
@@ -57,6 +50,19 @@ class _TelaPrincipalState extends State<TelaPrincipal>
     _assinaturaSessaoRevogada = SessaoServico.instance.sessoesRevogadas.listen(
       _tratarSessaoRevogada,
     );
+    _assinaturaAcessoCasamento = CasamentoAtualServico.instance
+        .observarAcessoAoCasamentoSelecionado()
+        .listen(
+          (possuiAcesso) {
+            if (!possuiAcesso) {
+              unawaited(_tratarAcessoAoCasamentoRevogado());
+            }
+          },
+          onError: (Object erro, StackTrace stackTrace) {
+            debugPrint('Erro ao acompanhar acesso ao casamento: $erro');
+            debugPrint(stackTrace.toString());
+          },
+        );
     _sincronizacao.addListener(_atualizarEstadoSincronizacao);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -68,7 +74,7 @@ class _TelaPrincipalState extends State<TelaPrincipal>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _assinaturaSessaoRevogada?.cancel();
-    _temporizadorOcultarSincronizacao?.cancel();
+    _assinaturaAcessoCasamento?.cancel();
     _sincronizacao.removeListener(_atualizarEstadoSincronizacao);
 
     super.dispose();
@@ -115,43 +121,63 @@ class _TelaPrincipalState extends State<TelaPrincipal>
     );
   }
 
+  Future<void> _tratarAcessoAoCasamentoRevogado() async {
+    if (!mounted || _tratandoAcessoRevogado) {
+      return;
+    }
+
+    _tratandoAcessoRevogado = true;
+    CasamentoAtualServico.instance.limpar();
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Evento indisponível'),
+          content: const Text(
+            'Este casamento foi encerrado ou seu acesso foi removido. '
+            'A lista de eventos será atualizada agora.',
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Entendi'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const TelaCasamentos()),
+      (route) => false,
+    );
+  }
+
   void _atualizarEstadoSincronizacao() {
     if (!mounted) {
       return;
     }
 
-    _temporizadorOcultarSincronizacao?.cancel();
-
-    final status = _sincronizacao.status;
-    final estaExecutando =
-        status == StatusSincronizacao.verificandoConexao ||
-        status == StatusSincronizacao.sincronizando;
-    final terminou =
-        status == StatusSincronizacao.concluida ||
-        status == StatusSincronizacao.offline ||
-        status == StatusSincronizacao.erro;
-
-    setState(() {
-      _mostrarBarraSincronizacao = estaExecutando || terminou;
-    });
-
-    if (terminou) {
-      _temporizadorOcultarSincronizacao = Timer(
-        _tempoExibicaoStatusSincronizacao,
-        () {
-          if (!mounted) {
-            return;
-          }
-
-          setState(() {
-            _mostrarBarraSincronizacao = false;
-          });
-        },
-      );
-    }
+    // A sincronização continua acontecendo em tempo real, mas mudanças comuns
+    // de status não inserem nem removem elementos do layout. Assim, a lista
+    // não se desloca toda vez que um check-in é enviado ao servidor.
+    setState(() {});
   }
 
-  Future<void> _sincronizarAgora() async {
+  bool get _deveMostrarAvisoSincronizacao {
+    return _sincronizacao.status == StatusSincronizacao.offline ||
+        _sincronizacao.status == StatusSincronizacao.erro;
+  }
+
+  Future<void> _sincronizarAgora({
+    bool mostrarErroAutomaticamente = false,
+  }) async {
     if (_sincronizacao.emAndamento) {
       return;
     }
@@ -162,73 +188,213 @@ class _TelaPrincipalState extends State<TelaPrincipal>
       return;
     }
 
-    if (!resultado.sucesso && !resultado.semConexao) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(resultado.mensagem)));
+    if (resultado.listaFoiRedefinida) {
+      if (resultado.operacoesLocaisDescartadas > 0) {
+        await _mostrarAvisoListaRedefinida(resultado);
+
+        if (!mounted) {
+          return;
+        }
+      } else {
+        _mostrarAvisoRapidoListaAtualizada(resultado.versaoLista);
+      }
+    }
+
+    if (!resultado.sucesso &&
+        !resultado.semConexao &&
+        mostrarErroAutomaticamente) {
+      await _abrirDetalhesSincronizacao();
     }
   }
 
-  Future<void> _gerarRelatorioExcel() async {
-    if (_gerandoRelatorio || _sincronizacao.emAndamento) {
+  Future<void> _mostrarAvisoListaRedefinida(
+    ResultadoSincronizacao resultado,
+  ) async {
+    final texto = StringBuffer()
+      ..writeln(
+        'A versão ${resultado.versaoLista} da lista foi baixada e salva por '
+        'completo antes de substituir a cópia anterior deste celular.',
+      )
+      ..writeln()
+      ..writeln(
+        '${resultado.operacoesLocaisDescartadas} alteração(ões) local(is) '
+        'pertenciam à lista anterior e não foram enviadas ao servidor.',
+      );
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded),
+              SizedBox(width: 10),
+              Expanded(child: Text('Lista atualizada')),
+            ],
+          ),
+          content: Text(texto.toString()),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Entendi'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _mostrarAvisoRapidoListaAtualizada(int versao) {
+    if (!mounted) {
       return;
     }
 
-    FocusManager.instance.primaryFocus?.unfocus();
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('Lista atualizada para a versão $versao.'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+  }
 
-    setState(() {
-      _gerandoRelatorio = true;
-    });
+  Future<void> _aoTocarBarraSincronizacao() async {
+    if (_sincronizacao.emAndamento) {
+      return;
+    }
 
-    try {
-      final resultadoSincronizacao = await _sincronizacao
-          .sincronizarDadosIniciais();
+    if (_sincronizacao.status == StatusSincronizacao.erro) {
+      await _abrirDetalhesSincronizacao();
+      return;
+    }
 
-      final relatorio = await RelatorioExcelServico.instance
-          .gerarECompartilhar();
+    await _sincronizarAgora(mostrarErroAutomaticamente: true);
+  }
 
-      if (!mounted) {
-        return;
-      }
+  Future<void> _abrirDetalhesSincronizacao() async {
+    if (!mounted) {
+      return;
+    }
 
-      final complemento = resultadoSincronizacao.sucesso
-          ? ''
-          : ' O arquivo foi criado com os dados disponíveis neste celular.';
+    final mensagem = _sincronizacao.mensagem.trim();
+    final erroTecnico = _sincronizacao.ultimoErroTecnico?.trim();
+    final ultimaSincronizacao = _sincronizacao.ultimaSincronizacao;
 
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(
-            content: Text(
-              'Relatório Excel gerado: ${relatorio.presentes} presentes, '
-              '${relatorio.ausentes} ausentes e '
-              '${relatorio.conflitos} conflito(s).$complemento',
+    final detalhesParaCopiar = StringBuffer()
+      ..writeln('Status: ${_obterTituloStatusSincronizacao()}')
+      ..writeln('Mensagem: $mensagem');
+
+    if (ultimaSincronizacao != null) {
+      detalhesParaCopiar.writeln(
+        'Última sincronização concluída: '
+        '${_formatarDataHora(ultimaSincronizacao.toLocal())}',
+      );
+    }
+
+    if (erroTecnico != null && erroTecnico.isNotEmpty) {
+      detalhesParaCopiar
+        ..writeln()
+        ..writeln('Detalhes técnicos:')
+        ..write(erroTecnico);
+    }
+
+    final tentarNovamente = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Row(
+            children: [
+              Icon(
+                _obterIconeSincronizacao(),
+                color: _obterCorIconeSincronizacao(),
+              ),
+              const SizedBox(width: 10),
+              Expanded(child: Text(_obterTituloStatusSincronizacao())),
+            ],
+          ),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520, maxHeight: 520),
+            child: SingleChildScrollView(
+              child: SelectableText(detalhesParaCopiar.toString()),
             ),
           ),
-        );
-    } catch (erro) {
-      if (!mounted) {
-        return;
-      }
+          actions: [
+            TextButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(
+                  ClipboardData(text: detalhesParaCopiar.toString()),
+                );
 
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(content: Text('Não foi possível gerar o relatório: $erro')),
+                if (!dialogContext.mounted) {
+                  return;
+                }
+
+                ScaffoldMessenger.of(dialogContext)
+                  ..hideCurrentSnackBar()
+                  ..showSnackBar(
+                    const SnackBar(content: Text('Detalhes do erro copiados.')),
+                  );
+              },
+              icon: const Icon(Icons.copy_outlined),
+              label: const Text('Copiar'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Fechar'),
+            ),
+            ElevatedButton.icon(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Tentar novamente'),
+            ),
+          ],
         );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _gerandoRelatorio = false;
-        });
-      }
+      },
+    );
+
+    if (tentarNovamente == true && mounted) {
+      await _sincronizarAgora(mostrarErroAutomaticamente: true);
     }
+  }
+
+  String _obterTituloStatusSincronizacao() {
+    switch (_sincronizacao.status) {
+      case StatusSincronizacao.aguardando:
+        return 'Aguardando sincronização';
+      case StatusSincronizacao.verificandoConexao:
+        return 'Verificando conexão';
+      case StatusSincronizacao.sincronizando:
+        return 'Sincronizando dados';
+      case StatusSincronizacao.concluida:
+        return 'Sincronização concluída';
+      case StatusSincronizacao.offline:
+        return 'Dispositivo offline';
+      case StatusSincronizacao.erro:
+        return 'Erro de sincronização';
+    }
+  }
+
+  String _formatarDataHora(DateTime data) {
+    String doisDigitos(int valor) => valor.toString().padLeft(2, '0');
+
+    return '${doisDigitos(data.day)}/${doisDigitos(data.month)}/${data.year} '
+        '${doisDigitos(data.hour)}:${doisDigitos(data.minute)}:'
+        '${doisDigitos(data.second)}';
   }
 
   Future<void> _abrirConflitos() async {
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const TelaConflitos()),
+    );
+  }
+
+  Future<void> _abrirImportacaoLista() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const TelaImportacaoLista()),
     );
   }
 
@@ -284,6 +450,19 @@ class _TelaPrincipalState extends State<TelaPrincipal>
           ],
         );
       },
+    );
+  }
+
+  void _abrirMeusCasamentos() {
+    FocusManager.instance.primaryFocus?.unfocus();
+
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+      return;
+    }
+
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const TelaCasamentos()),
     );
   }
 
@@ -394,11 +573,42 @@ class _TelaPrincipalState extends State<TelaPrincipal>
     }
   }
 
+  Widget _construirBotaoSincronizacao() {
+    final cor = _obterCorIconeSincronizacao();
+
+    return IconButton(
+      tooltip: _sincronizacao.emAndamento
+          ? 'Sincronizando...'
+          : 'Sincronizar agora',
+      onPressed: _sincronizacao.emAndamento
+          ? null
+          : () => _sincronizarAgora(mostrarErroAutomaticamente: true),
+      icon: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 180),
+        child: _sincronizacao.emAndamento
+            ? SizedBox(
+                key: const ValueKey('sincronizando'),
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: cor,
+                ),
+              )
+            : Icon(
+                _obterIconeSincronizacao(),
+                key: ValueKey(_sincronizacao.status),
+                color: cor,
+              ),
+      ),
+    );
+  }
+
   Widget _construirBarraSincronizacao() {
     return Material(
       color: _obterCorFundoSincronizacao(),
       child: InkWell(
-        onTap: _sincronizacao.emAndamento ? null : _sincronizarAgora,
+        onTap: _sincronizacao.emAndamento ? null : _aoTocarBarraSincronizacao,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(
@@ -448,16 +658,57 @@ class _TelaPrincipalState extends State<TelaPrincipal>
   Widget build(BuildContext context) {
     final usuarioAtual = SessaoServico.instance.usuarioAtual;
     final nomeUsuario = usuarioAtual?.nome ?? 'Não identificado';
+    final casamento = CasamentoAtualServico.instance.casamento;
+    final ehAdmin = CasamentoAtualServico.instance.ehAdmin;
+    final telas = <Widget>[
+      const AbaRecepcao(),
+      const AbaMesas(),
+      if (ehAdmin) const AbaCadastro(),
+      if (ehAdmin) const AbaEquipe(),
+    ];
+    final navegacao = <BottomNavigationBarItem>[
+      const BottomNavigationBarItem(
+        icon: Icon(Icons.favorite_outline),
+        activeIcon: Icon(Icons.favorite),
+        label: 'Casamentos',
+      ),
+      const BottomNavigationBarItem(
+        icon: Icon(Icons.search),
+        label: 'Recepção',
+      ),
+      const BottomNavigationBarItem(
+        icon: Icon(Icons.table_restaurant),
+        label: 'Mesas',
+      ),
+      if (ehAdmin)
+        const BottomNavigationBarItem(
+          icon: Icon(Icons.add_circle_outline),
+          label: 'Cadastros',
+        ),
+      if (ehAdmin)
+        const BottomNavigationBarItem(
+          icon: Icon(Icons.groups_outlined),
+          label: 'Equipe',
+        ),
+    ];
+
+    if (_abaSelecionada >= telas.length) {
+      _abaSelecionada = 0;
+    }
 
     return Scaffold(
       appBar: AppBar(
+        automaticallyImplyLeading: false,
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Gestão do Casamento', style: TextStyle(fontSize: 19)),
             Text(
-              'Usuário: $nomeUsuario',
+              casamento?.titulo ?? 'Gestão do Casamento',
+              style: const TextStyle(fontSize: 19),
+            ),
+            Text(
+              '${ehAdmin ? 'Administradora' : 'Funcionário'}: $nomeUsuario',
               style: const TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.normal,
@@ -466,12 +717,21 @@ class _TelaPrincipalState extends State<TelaPrincipal>
           ],
         ),
         actions: [
-          _construirBotaoConflitos(),
           IconButton(
-            tooltip: 'Sincronizar agora',
-            onPressed: _sincronizacao.emAndamento ? null : _sincronizarAgora,
-            icon: const Icon(Icons.sync),
+            tooltip: 'Configurações da conta',
+            onPressed: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const TelaConta())),
+            icon: const Icon(Icons.settings_outlined),
           ),
+          if (ehAdmin)
+            IconButton(
+              tooltip: 'Importar lista',
+              onPressed: _abrirImportacaoLista,
+              icon: const Icon(Icons.upload_file_outlined),
+            ),
+          _construirBotaoConflitos(),
+          _construirBotaoSincronizacao(),
           IconButton(
             tooltip: 'Sair',
             onPressed: _sair,
@@ -479,56 +739,47 @@ class _TelaPrincipalState extends State<TelaPrincipal>
           ),
         ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          AnimatedSize(
-            duration: const Duration(milliseconds: 250),
-            curve: Curves.easeInOut,
-            child: _mostrarBarraSincronizacao
-                ? _construirBarraSincronizacao()
-                : const SizedBox.shrink(),
+          Positioned.fill(child: telas[_abaSelecionada]),
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: IgnorePointer(
+              ignoring: !_deveMostrarAvisoSincronizacao,
+              child: AnimatedSlide(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+                offset: _deveMostrarAvisoSincronizacao
+                    ? Offset.zero
+                    : const Offset(0, -1),
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 180),
+                  opacity: _deveMostrarAvisoSincronizacao ? 1 : 0,
+                  child: _construirBarraSincronizacao(),
+                ),
+              ),
+            ),
           ),
-          Expanded(child: _telas[_abaSelecionada]),
         ],
       ),
-      floatingActionButton: _abaSelecionada == 0
-          ? FloatingActionButton.extended(
-              heroTag: 'gerar-relatorio-excel',
-              onPressed: _gerandoRelatorio || _sincronizacao.emAndamento
-                  ? null
-                  : _gerarRelatorioExcel,
-              icon: _gerandoRelatorio
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.table_view_outlined),
-              label: Text(_gerandoRelatorio ? 'Gerando...' : 'Relatório Excel'),
-            )
-          : null,
       bottomNavigationBar: BottomNavigationBar(
         type: BottomNavigationBarType.fixed,
-        currentIndex: _abaSelecionada,
+        currentIndex: _abaSelecionada + 1,
         onTap: (index) {
           FocusManager.instance.primaryFocus?.unfocus();
 
+          if (index == 0) {
+            _abrirMeusCasamentos();
+            return;
+          }
+
           setState(() {
-            _abaSelecionada = index;
+            _abaSelecionada = index - 1;
           });
         },
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Recepção'),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.table_restaurant),
-            label: 'Mesas',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.add_circle_outline),
-            label: 'Cadastros',
-          ),
-          BottomNavigationBarItem(icon: Icon(Icons.chat), label: 'Equipe'),
-        ],
+        items: navegacao,
       ),
     );
   }

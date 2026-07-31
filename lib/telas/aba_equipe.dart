@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import '../servicos/supabase_servico.dart';
-import '../modelos/modelos.dart';
+
+import '../servicos/equipe_servico.dart';
 
 class AbaEquipe extends StatefulWidget {
   const AbaEquipe({super.key});
@@ -10,287 +10,360 @@ class AbaEquipe extends StatefulWidget {
 }
 
 class _AbaEquipeState extends State<AbaEquipe> {
-  final _servico = SupabaseServico();
-  final _mensagemController = TextEditingController();
-  Staff? _eu;
-
-  // 1. Criamos as variáveis para segurar a conexão em tempo real
-  late final Stream<List<Staff>> _streamStaff;
-  late final Stream<List<MensagemChat>> _streamChat;
+  final EquipeServico _servico = EquipeServico.instance;
+  final TextEditingController _busca = TextEditingController();
+  late Stream<List<MembroEquipe>> _equipeEmTempoReal;
 
   @override
   void initState() {
     super.initState();
-    // 2. Iniciamos a conexão APENAS UMA VEZ quando a tela abre.
-    // Isso impede que o Flutter desconecte o chat ao redesenhar a tela.
-    _streamStaff = _servico.listarStaff();
-    _streamChat = _servico.listarMensagens();
+    _equipeEmTempoReal = _servico.listarEmTempoReal();
   }
 
-  void _pedirSenhaAdmin() {
-    final senhaCtrl = TextEditingController();
-    const senhaAdmin = 'admin123';
+  void _recarregar() =>
+      setState(() => _equipeEmTempoReal = _servico.listarEmTempoReal());
 
-    showDialog(
+  @override
+  void dispose() {
+    _busca.dispose();
+    super.dispose();
+  }
+
+  Future<void> _convidar() async {
+    final resultado = await showDialog<ResultadoConviteFuncionario>(
+      context: context,
+      builder: (_) => _DialogConvidarFuncionario(servico: _servico),
+    );
+    if (resultado != null && mounted) {
+      _recarregar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            resultado.notificacaoEnviada
+                ? 'Convite enviado. A pessoa receberá o acesso por e-mail.'
+                : resultado.mensagemNotificacao ??
+                      (resultado.conviteEnviado
+                          ? 'A conta foi preparada, mas não foi possível enviar o e-mail.'
+                          : 'O acesso foi liberado, mas não foi possível enviar o e-mail.'),
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _desativar(MembroEquipe membro) async {
+    final confirmar = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Acesso Restrito'),
-        content: TextField(
-          controller: senhaCtrl,
-          obscureText: true,
-          decoration: const InputDecoration(hintText: 'Senha de Administrador'),
-        ),
+        title: const Text('Remover acesso?'),
+        content: Text('${membro.nome} não poderá mais acessar este casamento.'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancelar'),
           ),
           ElevatedButton(
-            onPressed: () {
-              if (senhaCtrl.text == senhaAdmin) {
-                Navigator.pop(context);
-                _dialogNovoStaff();
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Senha Incorreta!')),
-                );
-                Navigator.pop(context);
-              }
-            },
-            child: const Text('Validar'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remover'),
           ),
         ],
       ),
     );
+    if (confirmar != true) {
+      return;
+    }
+    try {
+      await _servico.desativar(membro);
+      _recarregar();
+    } catch (erro) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Não foi possível remover: $erro')),
+        );
+      }
+    }
   }
 
-  void _dialogNovoStaff() {
-    final nomeCtrl = TextEditingController();
-    final sobrenomeCtrl = TextEditingController();
-    final ocupacaoCtrl = TextEditingController();
+  Future<void> _convidarParaEsteCasamento(MembroEquipe membro) async {
+    try {
+      final resultado = await _servico.convidarParaEsteCasamento(membro);
+      _recarregar();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              resultado.notificacaoEnviada
+                  ? '${membro.nome} foi convidado e recebeu um e-mail.'
+                  : resultado.mensagemNotificacao ??
+                        '${membro.nome} foi incluído neste casamento, mas o e-mail não pôde ser enviado.',
+            ),
+          ),
+        );
+      }
+    } catch (erro) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Não foi possível incluir: $erro')),
+        );
+      }
+    }
+  }
 
-    showDialog(
+  Future<void> _removerDaEquipe(MembroEquipe membro) async {
+    final confirmar = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Novo Staff'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nomeCtrl,
-              decoration: const InputDecoration(hintText: 'Nome'),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: sobrenomeCtrl,
-              decoration: const InputDecoration(hintText: 'Sobrenome'),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: ocupacaoCtrl,
-              decoration: const InputDecoration(
-                hintText: 'Ocupação (ex: Segurança)',
-              ),
-            ),
-          ],
+        title: const Text('Excluir funcionário da equipe?'),
+        content: Text(
+          '${membro.nome} será removido da sua lista e perderá acesso a todos os seus casamentos. A conta da pessoa não será apagada.',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancelar'),
           ),
           ElevatedButton(
-            onPressed: () {
-              if (nomeCtrl.text.isNotEmpty) {
-                _servico.adicionarStaff(
-                  nomeCtrl.text,
-                  sobrenomeCtrl.text,
-                  ocupacaoCtrl.text,
-                );
-                Navigator.pop(context);
-              }
-            },
-            child: const Text('Salvar'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Excluir'),
           ),
         ],
       ),
     );
-  }
+    if (confirmar != true) return;
 
-  void _enviarMsg() {
-    if (_mensagemController.text.trim().isNotEmpty && _eu != null) {
-      _servico.enviarMensagem(_eu!.id, _mensagemController.text.trim());
-      _mensagemController.clear();
+    try {
+      await _servico.removerDaEquipe(membro);
+      _recarregar();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${membro.nome} foi removido da equipe.')),
+        );
+      }
+    } catch (erro) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Não foi possível excluir: $erro')),
+        );
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_eu == null) {
-      return Scaffold(
-        floatingActionButton: FloatingActionButton.extended(
-          onPressed: _pedirSenhaAdmin,
-          icon: const Icon(Icons.person_add),
-          label: const Text('Adicionar Staff'),
-        ),
-        // 3. Usamos a variável segura em vez de chamar a função
-        body: StreamBuilder<List<Staff>>(
-          stream: _streamStaff,
-          builder: (context, snapshot) {
-            if (snapshot.hasError) {
-              return Center(child: Text('Erro: ${snapshot.error}'));
-            }
-            if (!snapshot.hasData) {
-              return const Center(child: CircularProgressIndicator());
-            }
-
-            final staffs = snapshot.data!;
-            if (staffs.isEmpty) {
-              return const Center(child: Text('Nenhum staff cadastrado.'));
-            }
-
-            return Column(
-              children: [
-                const Padding(
-                  padding: EdgeInsets.all(16.0),
-                  child: Text(
-                    'Quem é você?',
-                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-                  ),
-                ),
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: staffs.length,
-                    itemBuilder: (context, index) {
-                      final staff = staffs[index];
-                      return ListTile(
-                        leading: CircleAvatar(child: Text(staff.nome[0])),
-                        title: Text('${staff.nome} ${staff.sobrenome}'),
-                        subtitle: Text(staff.ocupacao),
-                        onTap: () => setState(() => _eu = staff),
-                      );
-                    },
-                  ),
-                ),
-              ],
+    return Scaffold(
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _convidar,
+        icon: const Icon(Icons.person_add_alt_1),
+        label: const Text('Adicionar funcionário'),
+      ),
+      body: StreamBuilder<List<MembroEquipe>>(
+        stream: _equipeEmTempoReal,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(
+              child: Text(
+                'Não foi possível carregar a equipe: ${snapshot.error}',
+              ),
             );
-          },
-        ),
-      );
+          }
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final todosOsMembros = snapshot.data!;
+          if (todosOsMembros.isEmpty) {
+            return const Center(
+              child: Text('Nenhum funcionário cadastrado na sua equipe ainda.'),
+            );
+          }
+          final termo = _busca.text.trim().toLowerCase();
+          final membros = todosOsMembros
+              .where(
+                (membro) =>
+                    termo.isEmpty ||
+                    membro.nome.toLowerCase().contains(termo) ||
+                    (membro.email?.toLowerCase().contains(termo) ?? false),
+              )
+              .toList();
+          return RefreshIndicator(
+            onRefresh: () async => _recarregar(),
+            child: ListView.separated(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 92),
+              itemCount: membros.isEmpty ? 2 : membros.length + 1,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: TextField(
+                      controller: _busca,
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(
+                        labelText: 'Buscar funcionário',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  );
+                }
+                if (membros.isEmpty) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Center(
+                      child: Text('Nenhum funcionário encontrado.'),
+                    ),
+                  );
+                }
+                final membro = membros[index - 1];
+                return ListTile(
+                  leading: CircleAvatar(
+                    child: const Icon(Icons.badge_outlined),
+                  ),
+                  title: Text(membro.nome),
+                  subtitle: Text(
+                    '${membro.email ?? 'Funcionário'} • ${_statusDoMembro(membro)}',
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (membro.convidadoParaEsteCasamento)
+                        IconButton(
+                          tooltip: 'Remover acesso deste casamento',
+                          icon: const Icon(Icons.person_remove_outlined),
+                          onPressed: () => _desativar(membro),
+                        )
+                      else
+                        FilledButton(
+                          onPressed: () => _convidarParaEsteCasamento(membro),
+                          child: const Text('Convidar'),
+                        ),
+                      PopupMenuButton<String>(
+                        tooltip: 'Opções do funcionário',
+                        onSelected: (acao) {
+                          if (acao == 'excluir') _removerDaEquipe(membro);
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(
+                            value: 'excluir',
+                            child: Text('Excluir da equipe'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  String _statusDoMembro(MembroEquipe membro) {
+    if (!membro.convidadoParaEsteCasamento) {
+      return 'sem acesso a este casamento';
     }
+    return membro.conviteAceito ? 'convite aceito' : 'aguardando aceite';
+  }
+}
 
-    // Usamos a variável segura do Staff para montar a tela
-    return StreamBuilder<List<Staff>>(
-      stream: _streamStaff,
-      builder: (context, snapStaff) {
-        // Usamos a variável segura do Chat para puxar as mensagens
-        return StreamBuilder<List<MensagemChat>>(
-          stream: _streamChat,
-          builder: (context, snapshot) {
-            if (!snapshot.hasData) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            final mensagens = snapshot.data!;
-            final staffs = snapStaff.data ?? [];
+class _DialogConvidarFuncionario extends StatefulWidget {
+  final EquipeServico servico;
+  const _DialogConvidarFuncionario({required this.servico});
 
-            return Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  color: Colors.deepPurple.shade50,
-                  child: Row(
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.arrow_back),
-                        onPressed: () => setState(() => _eu = null),
-                      ),
-                      Text(
-                        'Logado como: ${_eu!.nome} (${_eu!.ocupacao})',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                ),
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: mensagens.length,
-                    itemBuilder: (context, index) {
-                      final msg = mensagens[index];
-                      final souEu = msg.staffId == _eu!.id;
-                      String nomeRemetente = 'Desconhecido';
-                      for (var s in staffs) {
-                        if (s.id == msg.staffId) {
-                          nomeRemetente = '${s.nome} (${s.ocupacao})';
-                          break;
-                        }
-                      }
+  @override
+  State<_DialogConvidarFuncionario> createState() =>
+      _DialogConvidarFuncionarioState();
+}
 
-                      return Align(
-                        alignment: souEu
-                            ? Alignment.centerRight
-                            : Alignment.centerLeft,
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 6,
-                          ),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: souEu
-                                ? Colors.deepPurple.shade100
-                                : Colors.grey.shade200,
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: souEu
-                                ? CrossAxisAlignment.end
-                                : CrossAxisAlignment.start,
-                            children: [
-                              if (!souEu)
-                                Text(
-                                  nomeRemetente,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              Text(
-                                msg.mensagem,
-                                style: const TextStyle(fontSize: 16),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _mensagemController,
-                          decoration: const InputDecoration(
-                            hintText: 'Digite...',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      FloatingActionButton(
-                        onPressed: _enviarMsg,
-                        child: const Icon(Icons.send),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            );
-          },
+class _DialogConvidarFuncionarioState
+    extends State<_DialogConvidarFuncionario> {
+  final _formKey = GlobalKey<FormState>();
+  final _nome = TextEditingController();
+  final _email = TextEditingController();
+  bool _enviando = false;
+
+  @override
+  void dispose() {
+    _nome.dispose();
+    _email.dispose();
+    super.dispose();
+  }
+
+  Future<void> _enviar() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+    setState(() => _enviando = true);
+    try {
+      final resultado = await widget.servico.convidarFuncionario(
+        nome: _nome.text,
+        email: _email.text,
+      );
+      if (mounted) {
+        Navigator.pop(context, resultado);
+      }
+    } catch (erro) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Não foi possível enviar o convite: $erro')),
         );
-      },
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _enviando = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Adicionar funcionário'),
+      content: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextFormField(
+              controller: _nome,
+              decoration: const InputDecoration(
+                labelText: 'Nome',
+                border: OutlineInputBorder(),
+              ),
+              validator: (valor) => (valor?.trim().isNotEmpty ?? false)
+                  ? null
+                  : 'Informe o nome.',
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _email,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(
+                labelText: 'E-mail',
+                border: OutlineInputBorder(),
+              ),
+              validator: (valor) => valor?.contains('@') ?? false
+                  ? null
+                  : 'Informe um e-mail válido.',
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'A pessoa entrará na sua equipe e receberá acesso a este casamento.',
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _enviando ? null : () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        ElevatedButton(
+          onPressed: _enviando ? null : _enviar,
+          child: Text(_enviando ? 'Enviando...' : 'Enviar convite'),
+        ),
+      ],
     );
   }
 }

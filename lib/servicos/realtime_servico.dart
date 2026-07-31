@@ -31,6 +31,12 @@ class RealtimeServico {
         .onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
+          table: 'controle_lista',
+          callback: (_) => _aoReceberAlteracao(),
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
           table: 'mesas',
           callback: (_) => _aoReceberAlteracao(),
         )
@@ -71,7 +77,7 @@ class RealtimeServico {
     }
 
     SincronizacaoAutomaticaServico.instance.agendar(
-      atraso: const Duration(milliseconds: 700),
+      atraso: const Duration(milliseconds: 250),
     );
   }
 
