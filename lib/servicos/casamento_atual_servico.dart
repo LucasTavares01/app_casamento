@@ -6,8 +6,21 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../banco/banco_instancia.dart';
 import '../banco/banco_local.dart';
+import '../modelos/tipos_evento.dart';
 
 enum PapelNoCasamento { admin, funcionario }
+
+class PapeisContaAtual {
+  final bool cerimonialista;
+  final bool funcionario;
+
+  const PapeisContaAtual({
+    required this.cerimonialista,
+    required this.funcionario,
+  });
+
+  bool get contaMista => cerimonialista && funcionario;
+}
 
 class CasamentoAtual {
   final String id;
@@ -15,6 +28,9 @@ class CasamentoAtual {
   final String titulo;
   final String? nomePessoa1;
   final String? nomePessoa2;
+  final TipoEvento tipoEvento;
+  final String? rotuloPessoas;
+  final Map<String, dynamic> detalhesEvento;
   final DateTime? dataEvento;
   final String? horarioEvento;
   final String? localEvento;
@@ -27,6 +43,9 @@ class CasamentoAtual {
     required this.titulo,
     required this.nomePessoa1,
     required this.nomePessoa2,
+    this.tipoEvento = TipoEvento.casamento,
+    this.rotuloPessoas,
+    this.detalhesEvento = const {},
     required this.dataEvento,
     required this.horarioEvento,
     required this.localEvento,
@@ -36,6 +55,8 @@ class CasamentoAtual {
 
   bool get ehAdmin => papel == PapelNoCasamento.admin;
 
+  bool get encerrado => status == 'finalizado' || status == 'arquivado';
+
   String get descricao {
     final nomes = [nomePessoa1, nomePessoa2]
         .whereType<String>()
@@ -43,6 +64,33 @@ class CasamentoAtual {
         .where((nome) => nome.isNotEmpty)
         .join(' e ');
     return nomes.isEmpty ? titulo : nomes;
+  }
+
+  String get descricaoPessoas {
+    final nomes = [nomePessoa1, nomePessoa2]
+        .whereType<String>()
+        .map((nome) => nome.trim())
+        .where((nome) => nome.isNotEmpty)
+        .join(' e ');
+    return nomes;
+  }
+
+  CasamentoAtual comStatus(String novoStatus) {
+    return CasamentoAtual(
+      id: id,
+      organizacaoId: organizacaoId,
+      titulo: titulo,
+      nomePessoa1: nomePessoa1,
+      nomePessoa2: nomePessoa2,
+      tipoEvento: tipoEvento,
+      rotuloPessoas: rotuloPessoas,
+      detalhesEvento: detalhesEvento,
+      dataEvento: dataEvento,
+      horarioEvento: horarioEvento,
+      localEvento: localEvento,
+      status: novoStatus,
+      papel: papel,
+    );
   }
 }
 
@@ -73,33 +121,51 @@ class CasamentoAtualServico {
   }
 
   bool get ehAdmin => _casamento?.ehAdmin ?? false;
+  bool get somenteLeitura => _casamento?.encerrado ?? false;
 
-  /// Contas criadas antes do modelo multiempresa ainda podem não ter uma
-  /// organização. Ao entrar, criamos o espaço apenas se a conta não for uma
-  /// funcionária já vinculada a algum casamento.
+  void exigirEdicao() {
+    if (somenteLeitura) {
+      throw StateError(
+        'Este casamento foi encerrado e está disponível somente para leitura.',
+      );
+    }
+  }
+
+  Future<PapeisContaAtual> obterPapeisContaAtual() async {
+    if (_supabase.auth.currentUser == null) {
+      return const PapeisContaAtual(cerimonialista: false, funcionario: false);
+    }
+
+    final resposta = await _supabase.rpc('obter_papeis_conta_atual_v1');
+    final dados = resposta is Map
+        ? Map<String, dynamic>.from(resposta)
+        : const <String, dynamic>{};
+
+    return PapeisContaAtual(
+      cerimonialista: dados['cerimonialista'] == true,
+      funcionario: dados['funcionario'] == true,
+    );
+  }
+
+  Future<bool> possuiPerfilCerimonialista() async {
+    final papeis = await obterPapeisContaAtual();
+    return papeis.cerimonialista;
+  }
+
+  /// Garante a organização administrativa da conta sem apagar ou substituir
+  /// vínculos de funcionário. Assim, o mesmo usuário pode atuar nos dois papéis.
   Future<void> garantirOrganizacaoDaCerimonialista() async {
     final usuario = _supabase.auth.currentUser;
     if (usuario == null) return;
 
     final metadados = usuario.userMetadata ?? const <String, dynamic>{};
-    if (metadados['criar_organizacao'] == false) return;
+    final deveCriarOrganizacao = metadados['criar_organizacao'];
+    if (deveCriarOrganizacao == false ||
+        deveCriarOrganizacao?.toString().toLowerCase() == 'false') {
+      return;
+    }
 
-    final [organizacoes, casamentos] = await Future.wait([
-      _supabase
-          .from('membros_organizacao')
-          .select('organizacao_id')
-          .eq('usuario_id', usuario.id)
-          .eq('ativo', true)
-          .limit(1),
-      _supabase
-          .from('membros_casamento')
-          .select('casamento_id')
-          .eq('usuario_id', usuario.id)
-          .eq('ativo', true)
-          .limit(1),
-    ]);
-
-    if ((organizacoes as List).isNotEmpty || (casamentos as List).isNotEmpty) {
+    if (await possuiPerfilCerimonialista()) {
       return;
     }
 
@@ -108,16 +174,10 @@ class CasamentoAtualServico {
         _textoOpcional(metadados['full_name']) ??
         (usuario.email ?? 'Minha cerimonial').split('@').first;
 
-    try {
-      await _supabase.rpc(
-        'criar_organizacao_com_admin_v1',
-        params: {'p_nome': nome},
-      );
-    } on PostgrestException catch (erro) {
-      // Outra tela ou aparelho pode ter criado a organização no mesmo
-      // instante. Nesse caso, a conta já está pronta para continuar.
-      if (!erro.message.contains('USUARIO_JA_POSSUI_ORGANIZACAO')) rethrow;
-    }
+    await _supabase.rpc(
+      'habilitar_perfil_cerimonialista_v1',
+      params: {'p_nome': nome},
+    );
   }
 
   Future<List<CasamentoAtual>> listarCasamentos() async {
@@ -129,7 +189,7 @@ class CasamentoAtualServico {
     final casamentos = await _supabase
         .from('casamentos')
         .select(
-          'id, organizacao_id, titulo, nome_pessoa_1, nome_pessoa_2, data_evento, hora_evento, local_evento, status',
+          'id, organizacao_id, titulo, nome_pessoa_1, nome_pessoa_2, tipo_evento, rotulo_pessoas, detalhes_evento, data_evento, hora_evento, local_evento, status',
         )
         .order('data_evento', ascending: false);
 
@@ -159,29 +219,49 @@ class CasamentoAtualServico {
               : PapelNoCasamento.funcionario,
     };
 
-    return (casamentos as List).map((item) {
+    final resultado = <CasamentoAtual>[];
+
+    for (final item in casamentos as List) {
       final registro = Map<String, dynamic>.from(item as Map);
       final organizacaoId = registro['organizacao_id'].toString();
       final id = registro['id'].toString();
-      final papel = idsOrganizacoesAdmin.contains(organizacaoId)
-          ? PapelNoCasamento.admin
-          : papeisPorCasamento[id] ?? PapelNoCasamento.funcionario;
+      final ehAdminNaOrganizacao = idsOrganizacoesAdmin.contains(organizacaoId);
+      final papelNoCasamento = papeisPorCasamento[id];
 
-      return CasamentoAtual(
-        id: id,
-        organizacaoId: organizacaoId,
-        titulo: registro['titulo']?.toString() ?? 'Casamento',
-        nomePessoa1: _textoOpcional(registro['nome_pessoa_1']),
-        nomePessoa2: _textoOpcional(registro['nome_pessoa_2']),
-        dataEvento: DateTime.tryParse(
-          registro['data_evento']?.toString() ?? '',
-        ),
-        horarioEvento: _textoOpcional(registro['hora_evento']),
-        localEvento: _textoOpcional(registro['local_evento']),
-        status: registro['status']?.toString() ?? 'rascunho',
-        papel: papel,
-      );
-    }).toList();
+      CasamentoAtual criarRegistro(PapelNoCasamento papel) {
+        return CasamentoAtual(
+          id: id,
+          organizacaoId: organizacaoId,
+          titulo: registro['titulo']?.toString() ?? 'Casamento',
+          nomePessoa1: _textoOpcional(registro['nome_pessoa_1']),
+          nomePessoa2: _textoOpcional(registro['nome_pessoa_2']),
+          tipoEvento: tipoEventoFromBanco(registro['tipo_evento']),
+          rotuloPessoas: _textoOpcional(registro['rotulo_pessoas']),
+          detalhesEvento: _mapa(registro['detalhes_evento']),
+          dataEvento: DateTime.tryParse(
+            registro['data_evento']?.toString() ?? '',
+          ),
+          horarioEvento: _textoOpcional(registro['hora_evento']),
+          localEvento: _textoOpcional(registro['local_evento']),
+          status: registro['status']?.toString() ?? 'rascunho',
+          papel: papel,
+        );
+      }
+
+      // Uma conta mista pode ter os dois acessos ao mesmo casamento. O
+      // registro administrativo vem da organização; o registro de funcionário
+      // vem do convite específico para o casamento.
+      if (ehAdminNaOrganizacao) {
+        resultado.add(criarRegistro(PapelNoCasamento.admin));
+      }
+      if (papelNoCasamento == PapelNoCasamento.funcionario) {
+        resultado.add(criarRegistro(PapelNoCasamento.funcionario));
+      } else if (!ehAdminNaOrganizacao && papelNoCasamento != null) {
+        resultado.add(criarRegistro(papelNoCasamento));
+      }
+    }
+
+    return resultado;
   }
 
   /// Atualiza a lista assim que um casamento ou vínculo de acesso mudar,
@@ -232,8 +312,8 @@ class CasamentoAtualServico {
   }
 
   /// Informa imediatamente quando o casamento selecionado deixa de estar
-  /// disponível para a conta atual. Isso acontece quando o evento é encerrado,
-  /// o funcionário é removido ou o acesso à organização é desativado.
+  /// disponível para a conta atual. O encerramento não revoga o acesso:
+  /// nesse caso o casamento permanece disponível em modo somente leitura.
   ///
   /// As tabelas são observadas pelo Realtime e, a cada mudança, o acesso é
   /// confirmado novamente pelo próprio RLS do Supabase. Se a consulta não
@@ -283,11 +363,23 @@ class CasamentoAtualServico {
       await for (final _ in atualizacoes.stream) {
         final registros = await _supabase
             .from('casamentos')
-            .select('id')
+            .select('id, status')
             .eq('id', casamentoSelecionado.id)
             .limit(1);
 
-        yield (registros as List).isNotEmpty;
+        final lista = registros as List;
+        if (lista.isEmpty) {
+          yield false;
+          continue;
+        }
+
+        final statusAtual = (lista.first as Map)['status']?.toString();
+        if (statusAtual != null &&
+            statusAtual != _casamento?.status &&
+            _casamento != null) {
+          _casamento = _casamento!.comStatus(statusAtual);
+        }
+        yield true;
       }
     } finally {
       await Future.wait(assinaturas.map((assinatura) => assinatura.cancel()));
@@ -299,6 +391,9 @@ class CasamentoAtualServico {
     required String titulo,
     String? nomePessoa1,
     String? nomePessoa2,
+    TipoEvento tipoEvento = TipoEvento.casamento,
+    String? rotuloPessoas,
+    Map<String, dynamic>? detalhesEvento,
     DateTime? dataEvento,
     String? horarioEvento,
     String? localEvento,
@@ -322,20 +417,28 @@ class CasamentoAtualServico {
 
     final organizacaoId = (organizacoes.first as Map)['organizacao_id']
         .toString();
+    final tituloLimpo = _textoObrigatorio(titulo);
+    if (dataEvento == null || _textoOpcional(horarioEvento) == null) {
+      throw ArgumentError('Informe a data e o horário do evento.');
+    }
     final criado = await _supabase
         .from('casamentos')
         .insert({
           'organizacao_id': organizacaoId,
-          'titulo': titulo.trim(),
+          'titulo': tituloLimpo,
           'nome_pessoa_1': _textoOpcional(nomePessoa1),
           'nome_pessoa_2': _textoOpcional(nomePessoa2),
-          'data_evento': dataEvento?.toIso8601String().split('T').first,
+          'tipo_evento': tipoEvento.valorBanco,
+          'rotulo_pessoas': _textoOpcional(rotuloPessoas),
+          'detalhes_evento': detalhesEvento ?? const <String, dynamic>{},
+          'evento_completo': true,
+          'data_evento': dataEvento.toIso8601String().split('T').first,
           'hora_evento': _textoOpcional(horarioEvento),
           'local_evento': _textoOpcional(localEvento),
           'status': 'rascunho',
         })
         .select(
-          'id, organizacao_id, titulo, nome_pessoa_1, nome_pessoa_2, data_evento, hora_evento, local_evento, status',
+          'id, organizacao_id, titulo, nome_pessoa_1, nome_pessoa_2, tipo_evento, rotulo_pessoas, detalhes_evento, data_evento, hora_evento, local_evento, status',
         )
         .single();
 
@@ -346,12 +449,77 @@ class CasamentoAtualServico {
       titulo: registro['titulo'].toString(),
       nomePessoa1: _textoOpcional(registro['nome_pessoa_1']),
       nomePessoa2: _textoOpcional(registro['nome_pessoa_2']),
+      tipoEvento: tipoEventoFromBanco(registro['tipo_evento']),
+      rotuloPessoas: _textoOpcional(registro['rotulo_pessoas']),
+      detalhesEvento: _mapa(registro['detalhes_evento']),
       dataEvento: DateTime.tryParse(registro['data_evento']?.toString() ?? ''),
       horarioEvento: _textoOpcional(registro['hora_evento']),
       localEvento: _textoOpcional(registro['local_evento']),
       status: registro['status']?.toString() ?? 'rascunho',
       papel: PapelNoCasamento.admin,
     );
+  }
+
+  Future<CasamentoAtual> atualizarCasamento({
+    required CasamentoAtual casamento,
+    required String titulo,
+    required TipoEvento tipoEvento,
+    String? nomePessoa1,
+    String? nomePessoa2,
+    String? rotuloPessoas,
+    Map<String, dynamic>? detalhesEvento,
+    required DateTime dataEvento,
+    required String horarioEvento,
+    String? localEvento,
+  }) async {
+    if (!casamento.ehAdmin || casamento.encerrado) {
+      throw StateError('Este evento não está disponível para edição.');
+    }
+
+    final tituloLimpo = _textoObrigatorio(titulo);
+    final horarioLimpo = _textoObrigatorio(horarioEvento);
+    final resposta = await _supabase
+        .from('casamentos')
+        .update({
+          'titulo': tituloLimpo,
+          'tipo_evento': tipoEvento.valorBanco,
+          'nome_pessoa_1': _textoOpcional(nomePessoa1),
+          'nome_pessoa_2': _textoOpcional(nomePessoa2),
+          'rotulo_pessoas': _textoOpcional(rotuloPessoas),
+          'detalhes_evento': detalhesEvento ?? const <String, dynamic>{},
+          'data_evento': dataEvento.toIso8601String().split('T').first,
+          'hora_evento': horarioLimpo,
+          'local_evento': _textoOpcional(localEvento),
+          'evento_completo': true,
+        })
+        .eq('id', casamento.id)
+        .select(
+          'id, organizacao_id, titulo, nome_pessoa_1, nome_pessoa_2, tipo_evento, rotulo_pessoas, detalhes_evento, data_evento, hora_evento, local_evento, status',
+        )
+        .single();
+
+    final registro = Map<String, dynamic>.from(resposta);
+    final atualizado = CasamentoAtual(
+      id: registro['id'].toString(),
+      organizacaoId: registro['organizacao_id'].toString(),
+      titulo: registro['titulo'].toString(),
+      nomePessoa1: _textoOpcional(registro['nome_pessoa_1']),
+      nomePessoa2: _textoOpcional(registro['nome_pessoa_2']),
+      tipoEvento: tipoEventoFromBanco(registro['tipo_evento']),
+      rotuloPessoas: _textoOpcional(registro['rotulo_pessoas']),
+      detalhesEvento: _mapa(registro['detalhes_evento']),
+      dataEvento: DateTime.tryParse(registro['data_evento']?.toString() ?? ''),
+      horarioEvento: _textoOpcional(registro['hora_evento']),
+      localEvento: _textoOpcional(registro['local_evento']),
+      status: registro['status']?.toString() ?? casamento.status,
+      papel: casamento.papel,
+    );
+    if (_casamento?.id == atualizado.id && _casamento?.papel == atualizado.papel) {
+      _casamento = atualizado;
+      final usuarioId = _supabase.auth.currentUser?.id;
+      if (usuarioId != null) await _salvarCasamentoAtual(atualizado, usuarioId);
+    }
+    return atualizado;
   }
 
   Future<void> finalizarCasamento(CasamentoAtual casamento) async {
@@ -390,9 +558,7 @@ class CasamentoAtualServico {
     );
   }
 
-  Future<void> excluirCasamentoDefinitivamente(
-    CasamentoAtual casamento,
-  ) async {
+  Future<void> excluirCasamentoDefinitivamente(CasamentoAtual casamento) async {
     if (!casamento.ehAdmin) {
       throw StateError('Somente administradoras podem excluir um casamento.');
     }
@@ -412,7 +578,9 @@ class CasamentoAtualServico {
   /// O casamento fica associado ao usuário autenticado para impedir que outra
   /// conta aberta no mesmo aparelho reutilize uma cópia local que não pertence
   /// a ela.
-  Future<bool> restaurarDoArmazenamentoLocal({required String usuarioId}) async {
+  Future<bool> restaurarDoArmazenamentoLocal({
+    required String usuarioId,
+  }) async {
     if (_casamento != null) {
       return true;
     }
@@ -449,6 +617,9 @@ class CasamentoAtualServico {
         titulo: dados['titulo']?.toString() ?? 'Casamento',
         nomePessoa1: _textoOpcional(dados['nome_pessoa_1']),
         nomePessoa2: _textoOpcional(dados['nome_pessoa_2']),
+        tipoEvento: tipoEventoFromBanco(dados['tipo_evento']),
+        rotuloPessoas: _textoOpcional(dados['rotulo_pessoas']),
+        detalhesEvento: _mapa(dados['detalhes_evento']),
         dataEvento: DateTime.tryParse(dados['data_evento']?.toString() ?? ''),
         horarioEvento: _textoOpcional(dados['horario_evento']),
         localEvento: _textoOpcional(dados['local_evento']),
@@ -475,7 +646,23 @@ class CasamentoAtualServico {
     // impede que a mesma lista seja apagada e baixada novamente.
     await restaurarDoArmazenamentoLocal(usuarioId: usuarioId);
 
+    if (_casamento?.id == casamento.id &&
+        _casamento?.papel == casamento.papel) {
+      _casamento = casamento;
+      await _salvarCasamentoAtual(casamento, usuarioId);
+      return;
+    }
+
+    // O mesmo evento pode aparecer nas duas visões de uma conta mista. Nesse
+    // caso, trocar de papel não deve apagar os dados locais, mas ainda precisa
+    // registrar o aceite quando a pessoa abrir a versão de funcionário.
     if (_casamento?.id == casamento.id) {
+      if (!casamento.ehAdmin && !casamento.encerrado) {
+        await _supabase.rpc(
+          'aceitar_convite_casamento_v1',
+          params: {'p_casamento_id': casamento.id},
+        );
+      }
       _casamento = casamento;
       await _salvarCasamentoAtual(casamento, usuarioId);
       return;
@@ -490,7 +677,7 @@ class CasamentoAtualServico {
       );
     }
 
-    if (!casamento.ehAdmin) {
+    if (!casamento.ehAdmin && !casamento.encerrado) {
       await _supabase.rpc(
         'aceitar_convite_casamento_v1',
         params: {'p_casamento_id': casamento.id},
@@ -525,6 +712,9 @@ class CasamentoAtualServico {
       'titulo': casamento.titulo,
       'nome_pessoa_1': casamento.nomePessoa1,
       'nome_pessoa_2': casamento.nomePessoa2,
+      'tipo_evento': casamento.tipoEvento.valorBanco,
+      'rotulo_pessoas': casamento.rotuloPessoas,
+      'detalhes_evento': casamento.detalhesEvento,
       'data_evento': casamento.dataEvento?.toIso8601String(),
       'horario_evento': casamento.horarioEvento,
       'local_evento': casamento.localEvento,
@@ -544,9 +734,9 @@ class CasamentoAtualServico {
   }
 
   Future<void> _removerCasamentoPersistido() async {
-    await (_banco.delete(_banco.configuracoesLocais)
-          ..where((tabela) => tabela.chave.equals(_chaveCasamentoAtual)))
-        .go();
+    await (_banco.delete(
+      _banco.configuracoesLocais,
+    )..where((tabela) => tabela.chave.equals(_chaveCasamentoAtual))).go();
   }
 
   /// Limpa imediatamente o casamento em memória e agenda a remoção da cópia
@@ -564,7 +754,20 @@ class CasamentoAtualServico {
   }
 
   String? _textoOpcional(Object? valor) {
-    final texto = valor?.toString().trim();
+    final texto = valor?.toString().replaceAll('\u0000', '').trim();
     return texto == null || texto.isEmpty ? null : texto;
+  }
+
+  String _textoObrigatorio(String valor) {
+    final texto = valor.replaceAll('\u0000', '').trim();
+    if (texto.isEmpty) {
+      throw ArgumentError('Informe um nome para o casamento.');
+    }
+    return texto;
+  }
+
+  Map<String, dynamic> _mapa(Object? valor) {
+    if (valor is Map) return Map<String, dynamic>.from(valor);
+    return const <String, dynamic>{};
   }
 }

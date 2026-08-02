@@ -16,7 +16,6 @@ import 'porta_entrada.dart';
 import 'tela_conflitos.dart';
 import 'tela_casamentos.dart';
 import 'tela_conta.dart';
-import 'tela_importacao_lista.dart';
 
 class TelaPrincipal extends StatefulWidget {
   const TelaPrincipal({super.key});
@@ -56,6 +55,8 @@ class _TelaPrincipalState extends State<TelaPrincipal>
           (possuiAcesso) {
             if (!possuiAcesso) {
               unawaited(_tratarAcessoAoCasamentoRevogado());
+            } else if (mounted) {
+              setState(() {});
             }
           },
           onError: (Object erro, StackTrace stackTrace) {
@@ -136,7 +137,7 @@ class _TelaPrincipalState extends State<TelaPrincipal>
         return AlertDialog(
           title: const Text('Evento indisponível'),
           content: const Text(
-            'Este casamento foi encerrado ou seu acesso foi removido. '
+            'Este evento foi encerrado ou seu acesso foi removido. '
             'A lista de eventos será atualizada agora.',
           ),
           actions: [
@@ -388,13 +389,6 @@ class _TelaPrincipalState extends State<TelaPrincipal>
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const TelaConflitos()),
-    );
-  }
-
-  Future<void> _abrirImportacaoLista() async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const TelaImportacaoLista()),
     );
   }
 
@@ -660,17 +654,18 @@ class _TelaPrincipalState extends State<TelaPrincipal>
     final nomeUsuario = usuarioAtual?.nome ?? 'Não identificado';
     final casamento = CasamentoAtualServico.instance.casamento;
     final ehAdmin = CasamentoAtualServico.instance.ehAdmin;
+    final somenteLeitura = CasamentoAtualServico.instance.somenteLeitura;
     final telas = <Widget>[
       const AbaRecepcao(),
       const AbaMesas(),
-      if (ehAdmin) const AbaCadastro(),
-      if (ehAdmin) const AbaEquipe(),
+      if (ehAdmin && !somenteLeitura) const AbaCadastro(),
+      if (ehAdmin && !somenteLeitura) const AbaEquipe(),
     ];
     final navegacao = <BottomNavigationBarItem>[
       const BottomNavigationBarItem(
-        icon: Icon(Icons.favorite_outline),
-        activeIcon: Icon(Icons.favorite),
-        label: 'Casamentos',
+        icon: Icon(Icons.event_outlined),
+        activeIcon: Icon(Icons.event),
+        label: 'Eventos',
       ),
       const BottomNavigationBarItem(
         icon: Icon(Icons.search),
@@ -680,12 +675,12 @@ class _TelaPrincipalState extends State<TelaPrincipal>
         icon: Icon(Icons.table_restaurant),
         label: 'Mesas',
       ),
-      if (ehAdmin)
+      if (ehAdmin && !somenteLeitura)
         const BottomNavigationBarItem(
           icon: Icon(Icons.add_circle_outline),
           label: 'Cadastros',
         ),
-      if (ehAdmin)
+      if (ehAdmin && !somenteLeitura)
         const BottomNavigationBarItem(
           icon: Icon(Icons.groups_outlined),
           label: 'Equipe',
@@ -704,11 +699,12 @@ class _TelaPrincipalState extends State<TelaPrincipal>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              casamento?.titulo ?? 'Gestão do Casamento',
+              casamento?.titulo ?? 'Gestão do Evento',
               style: const TextStyle(fontSize: 19),
             ),
             Text(
-              '${ehAdmin ? 'Administradora' : 'Funcionário'}: $nomeUsuario',
+              '${ehAdmin ? 'Administradora' : 'Funcionário'}'
+              '${somenteLeitura ? ' • Somente leitura' : ''}: $nomeUsuario',
               style: const TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.normal,
@@ -724,13 +720,7 @@ class _TelaPrincipalState extends State<TelaPrincipal>
             ).push(MaterialPageRoute(builder: (_) => const TelaConta())),
             icon: const Icon(Icons.settings_outlined),
           ),
-          if (ehAdmin)
-            IconButton(
-              tooltip: 'Importar lista',
-              onPressed: _abrirImportacaoLista,
-              icon: const Icon(Icons.upload_file_outlined),
-            ),
-          _construirBotaoConflitos(),
+          if (!somenteLeitura) _construirBotaoConflitos(),
           _construirBotaoSincronizacao(),
           IconButton(
             tooltip: 'Sair',

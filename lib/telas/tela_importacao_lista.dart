@@ -131,7 +131,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
                 ),
                 const SizedBox(height: 12),
                 const Text(
-                  'Serão apagados do Supabase:',
+                  'Ao confirmar, serão substituídos:',
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 6),
@@ -316,7 +316,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
             const CircularProgressIndicator(),
             const SizedBox(height: 22),
             Text(
-              'Substituindo a lista no Supabase',
+              'Atualizando a lista oficial',
               style: Theme.of(context).textTheme.titleMedium,
               textAlign: TextAlign.center,
             ),
@@ -343,13 +343,13 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
             const CircularProgressIndicator(),
             const SizedBox(height: 22),
             Text(
-              'Analisando a lista com IA',
+              'Preparando sua lista',
               style: Theme.of(context).textTheme.titleMedium,
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
             const Text(
-              'O arquivo está sendo lido e convertido em mesas e convidados. '
+              'Estamos identificando as mesas e os convidados. '
               'Isso pode levar alguns minutos.',
               textAlign: TextAlign.center,
             ),
@@ -723,8 +723,8 @@ class _AvisoSeguro extends StatelessWidget {
           SizedBox(width: 10),
           Expanded(
             child: Text(
-              'A análise é apenas uma pré-visualização. Nada será alterado no '
-              'Supabase até você tocar em “Substituir lista atual” e confirmar.',
+              'Esta é apenas uma prévia. Nenhuma informação será alterada até '
+              'você revisar e confirmar a importação.',
             ),
           ),
         ],

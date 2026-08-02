@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../servicos/sessao_servico.dart';
 
@@ -39,22 +40,90 @@ class _TelaCriarContaState extends State<TelaCriarConta> {
     });
 
     try {
-      await SessaoServico.instance.criarConta(
+      final resultado =
+          await SessaoServico.instance.prepararContaCerimonialista(
         nome: _nomeController.text,
         email: _emailController.text,
         senha: _senhaController.text,
       );
+
       if (!mounted) return;
-      Navigator.pop(context);
+
+      switch (resultado.situacao) {
+        case SituacaoContaCerimonialista.novaConta:
+          await _mostrarMensagem(
+            titulo: 'Conta criada',
+            mensagem:
+                'Seu perfil de cerimonialista foi criado com sucesso.',
+          );
+          if (mounted) Navigator.pop(context);
+          return;
+
+        case SituacaoContaCerimonialista.confirmacaoEmailPendente:
+          await _mostrarMensagem(
+            titulo: 'Confirme seu e-mail',
+            mensagem:
+                'Enviamos uma mensagem para ${_emailController.text.trim()}. '
+                'Abra o e-mail e confirme seu cadastro para continuar.',
+          );
+          if (mounted) Navigator.pop(context);
+          return;
+
+        case SituacaoContaCerimonialista
+              .contaExistenteSemPerfilCerimonialista:
+          await _mostrarMensagem(
+            titulo: 'E-mail já cadastrado',
+            mensagem:
+                'Este e-mail já está cadastrado no sistema. Entre na conta '
+                'existente e habilite a conta de cerimonialista pelo seu '
+                'perfil, quando desejar.',
+          );
+          if (mounted) Navigator.pop(context);
+          return;
+      }
+    } on AuthException catch (erro) {
+      if (!mounted) return;
+      setState(() => _erro = _mensagemAuth(erro));
     } catch (erro) {
       if (!mounted) return;
       setState(() {
         _erro =
-            'Não foi possível criar a conta. Verifique os dados e tente novamente.';
+            'Não foi possível criar ou atualizar a conta. Tente novamente.';
       });
     } finally {
       if (mounted) setState(() => _criando = false);
     }
+  }
+
+  Future<void> _mostrarMensagem({
+    required String titulo,
+    required String mensagem,
+  }) {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(titulo),
+        content: Text(mensagem),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _mensagemAuth(AuthException erro) {
+    final mensagem = erro.message.toLowerCase();
+    if (mensagem.contains('password')) {
+      return 'A senha informada não atende aos requisitos de segurança.';
+    }
+    if (mensagem.contains('email')) {
+      return 'Não foi possível validar este e-mail. Confira o endereço informado.';
+    }
+    return 'Não foi possível concluir o cadastro. ${erro.message}';
   }
 
   Future<void> _entrarComGoogle() async {
@@ -64,7 +133,9 @@ class _TelaCriarContaState extends State<TelaCriarConta> {
     });
 
     try {
-      await SessaoServico.instance.entrarComGoogle();
+      await SessaoServico.instance.entrarComGoogle(
+        solicitarPerfilCerimonialista: true,
+      );
     } catch (_) {
       if (mounted) {
         setState(() {
@@ -100,7 +171,7 @@ class _TelaCriarContaState extends State<TelaCriarConta> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Você será a administradora dos seus casamentos e da sua equipe.',
+                      'Você será a administradora dos seus eventos e da sua equipe.',
                       style: TextStyle(color: Colors.grey.shade700),
                     ),
                     const SizedBox(height: 24),
@@ -166,7 +237,8 @@ class _TelaCriarContaState extends State<TelaCriarConta> {
                         prefixIcon: Icon(Icons.lock_outline),
                         border: OutlineInputBorder(),
                       ),
-                      validator: (valor) => valor == _senhaController.text
+                      validator: (valor) =>
+                          valor?.trim() == _senhaController.text.trim()
                           ? null
                           : 'As senhas não são iguais.',
                     ),

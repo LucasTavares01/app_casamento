@@ -755,7 +755,7 @@ function getSupabaseSecretKey(): string | null {
 
 function buildPrompt(fileName: string): string {
   return `
-Você está extraindo uma lista de convidados de casamento do arquivo "${fileName}".
+Você está extraindo uma lista de convidados de um evento do arquivo "${fileName}".
 
 OBJETIVO:
 Interpretar o documento visualmente como uma pessoa extremamente cuidadosa faria,

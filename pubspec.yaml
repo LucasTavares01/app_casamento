@@ -1,5 +1,5 @@
 name: app_casamento
-description: "Aplicativo de gestão e check-in de casamento com funcionamento online e offline."
+description: "ConfirmaAi: gestão e check-in de eventos com funcionamento online e offline."
 publish_to: 'none'
 
 version: 1.1.0+5

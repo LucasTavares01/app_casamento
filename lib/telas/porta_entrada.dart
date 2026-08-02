@@ -26,7 +26,8 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
   final _senhaController = TextEditingController();
   final Connectivity _connectivity = Connectivity();
 
-  static const Duration _tempoLimiteRestauracaoOnline = Duration(seconds: 10);
+  static const Duration _tempoLimitePorTentativa = Duration(seconds: 20);
+  static const int _maximoTentativasCarregarConta = 3;
 
   bool _carregando = false;
   bool _ocultarSenha = true;
@@ -124,9 +125,8 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
         return;
       }
 
-      await sessao
-          .sincronizarUsuarioAutenticado()
-          .timeout(_tempoLimiteRestauracaoOnline);
+      await _sincronizarContaComTentativas(sessao);
+      await _concluirPerfilCerimonialistaGooglePendente();
       if (mounted) _abrirAposAutenticacao();
     } catch (erro, stackTrace) {
       debugPrint('ERRO AO CARREGAR CONTA: $erro');
@@ -152,6 +152,113 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
         setState(() => _carregando = false);
       }
     }
+  }
+
+  Future<void> _sincronizarContaComTentativas(
+    SessaoServico sessao,
+  ) async {
+    Object? ultimoErro;
+    StackTrace? ultimaPilha;
+
+    for (
+      var tentativa = 1;
+      tentativa <= _maximoTentativasCarregarConta;
+      tentativa++
+    ) {
+      try {
+        await sessao
+            .sincronizarUsuarioAutenticado()
+            .timeout(_tempoLimitePorTentativa);
+        return;
+      } catch (erro, stackTrace) {
+        ultimoErro = erro;
+        ultimaPilha = stackTrace;
+
+        final podeTentarNovamente =
+            sessao.possuiSessaoLocal &&
+            tentativa < _maximoTentativasCarregarConta;
+        if (!podeTentarNovamente) {
+          Error.throwWithStackTrace(erro, stackTrace);
+        }
+
+        debugPrint(
+          'Aguardando a criação completa da conta '
+          '(tentativa $tentativa de $_maximoTentativasCarregarConta): $erro',
+        );
+        await Future<void>.delayed(
+          Duration(milliseconds: 800 * tentativa),
+        );
+      }
+    }
+
+    if (ultimoErro != null && ultimaPilha != null) {
+      Error.throwWithStackTrace(ultimoErro, ultimaPilha);
+    }
+  }
+
+  Future<void> _concluirPerfilCerimonialistaGooglePendente() async {
+    final sessao = SessaoServico.instance;
+    if (!await sessao.possuiPerfilCerimonialistaGooglePendente()) {
+      return;
+    }
+
+    final papeis =
+        await CasamentoAtualServico.instance.obterPapeisContaAtual();
+
+    if (papeis.cerimonialista || papeis.funcionario) {
+      await sessao.limparPerfilCerimonialistaGooglePendente();
+
+      if (mounted) {
+        await _mostrarMensagem(
+          titulo: 'E-mail já cadastrado',
+          mensagem:
+              'Este e-mail já está cadastrado. O perfil de cerimonialista '
+              'não pode ser criado por este fluxo. Entre na conta existente '
+              'e habilite o perfil pelo seu próprio cadastro.',
+        );
+      }
+      await sessao.encerrarSessao();
+      return;
+    }
+
+    if (!mounted) return;
+
+    await sessao.habilitarPerfilCerimonialista(
+      nome: sessao.nomeExibicaoAtual,
+    );
+    await sessao.limparPerfilCerimonialistaGooglePendente();
+
+    if (mounted) {
+      await _mostrarMensagem(
+        titulo: papeis.funcionario
+            ? 'Conta mista criada'
+            : 'Perfil de cerimonialista criado',
+        mensagem: papeis.funcionario
+            ? 'Pronto! Esta conta agora funciona como funcionário e como '
+                  'cerimonialista.'
+            : 'Seu perfil de cerimonialista foi criado com sucesso.',
+      );
+    }
+  }
+
+  Future<void> _mostrarMensagem({
+    required String titulo,
+    required String mensagem,
+  }) {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(titulo),
+        content: Text(mensagem),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<bool> _estaSemRede() async {
@@ -239,18 +346,47 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
       return;
     }
 
+    setState(() {
+      _carregando = true;
+      _erro = null;
+    });
+
     try {
+      final cadastrado =
+          await SessaoServico.instance.emailCadastrado(email);
+
+      if (!mounted) return;
+
+      if (!cadastrado) {
+        await _mostrarMensagem(
+          titulo: 'E-mail não cadastrado',
+          mensagem:
+              'Não encontramos uma conta com o e-mail $email. '
+              'Confira o endereço digitado ou crie uma nova conta.',
+        );
+        return;
+      }
+
       await SessaoServico.instance.enviarRecuperacaoDeSenha(email);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Enviamos as instruções para seu e-mail.'),
-        ),
+
+      await _mostrarMensagem(
+        titulo: 'E-mail enviado',
+        mensagem:
+            'Enviamos para $email um link para redefinir sua senha. '
+            'Verifique também a pasta de spam ou lixo eletrônico.',
       );
     } catch (_) {
       if (mounted) {
-        setState(() => _erro = 'Não foi possível enviar a recuperação agora.');
+        await _mostrarMensagem(
+          titulo: 'Não foi possível enviar',
+          mensagem:
+              'Não conseguimos enviar o e-mail de recuperação agora. '
+              'Tente novamente em alguns instantes.',
+        );
       }
+    } finally {
+      if (mounted) setState(() => _carregando = false);
     }
   }
 

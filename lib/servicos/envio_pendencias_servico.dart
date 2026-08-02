@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../banco/banco_instancia.dart';
 import '../banco/banco_local.dart';
+import 'casamento_atual_servico.dart';
 
 /// Resultado do envio da fila local para o Supabase.
 class ResultadoEnvioPendencias {
@@ -53,6 +54,14 @@ class EnvioPendenciasServico {
   /// Os eventos ficam por último para que o trigger do Supabase calcule
   /// o estado final da chegada depois das outras alterações.
   Future<ResultadoEnvioPendencias> enviarPendencias() async {
+    if (CasamentoAtualServico.instance.somenteLeitura) {
+      return const ResultadoEnvioPendencias(
+        totalEncontradas: 0,
+        enviadas: 0,
+        comErro: 0,
+      );
+    }
+
     final pendencias = await _listarPendenciasOrdenadas();
 
     if (pendencias.isEmpty) {

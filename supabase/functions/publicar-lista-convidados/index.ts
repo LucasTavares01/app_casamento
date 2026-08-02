@@ -26,7 +26,7 @@ Deno.serve(async (request) => {
 
     if (!isPlainObject(resultado) || !casamentoId) {
       return jsonResponse(
-        { mensagem: "A lista ou o casamento estão incompletos." },
+        { mensagem: "A lista ou o evento estão incompletos." },
         400,
       );
     }
@@ -66,7 +66,7 @@ Deno.serve(async (request) => {
       .eq("id", casamentoId)
       .maybeSingle();
     if (erroCasamento || !casamento) {
-      return jsonResponse({ mensagem: "Casamento não encontrado." }, 404);
+      return jsonResponse({ mensagem: "Evento não encontrado." }, 404);
     }
 
     const [{ data: adminOrganizacao }, { data: adminCasamento }] = await Promise.all([

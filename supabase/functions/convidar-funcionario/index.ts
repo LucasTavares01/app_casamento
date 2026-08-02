@@ -21,6 +21,7 @@ Deno.serve(async (request) => {
   if (request.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
+
   if (request.method !== "POST") {
     return json({ mensagem: "Método não permitido." }, 405);
   }
@@ -43,7 +44,7 @@ Deno.serve(async (request) => {
 
     if (!casamentoId || (!funcionarioId && (!nome || !isValidEmail(email)))) {
       return json(
-        { mensagem: "Funcionário, e-mail e casamento são obrigatórios." },
+        { mensagem: "Funcionário, e-mail e evento são obrigatórios." },
         400,
       );
     }
@@ -56,21 +57,23 @@ Deno.serve(async (request) => {
       },
     });
 
-    const { data: identidade, error: erroIdentidade } = await admin.auth.getUser(
-      token,
-    );
+    const { data: identidade, error: erroIdentidade } =
+      await admin.auth.getUser(token);
+
     if (erroIdentidade || !identidade.user) {
       return json({ mensagem: "Sua sessão expirou. Entre novamente." }, 401);
     }
 
     const solicitanteId = identidade.user.id;
+
     const { data: casamento, error: erroCasamento } = await admin
       .from("casamentos")
-      .select("organizacao_id, titulo")
+      .select("organizacao_id, titulo, tipo_evento, data_evento, hora_evento, local_evento")
       .eq("id", casamentoId)
       .maybeSingle();
+
     if (erroCasamento || !casamento) {
-      return json({ mensagem: "Casamento não encontrado." }, 404);
+      return json({ mensagem: "Evento não encontrado." }, 404);
     }
 
     const [{ data: adminOrganizacao }, { data: adminCasamento }] =
@@ -104,6 +107,7 @@ Deno.serve(async (request) => {
     let emailDestino: string;
     let nomeDestino: string;
     let conviteEnviado = false;
+    let contaJaExistia = false;
 
     if (funcionarioId) {
       const { data: funcionario, error: erroFuncionario } = await admin
@@ -124,6 +128,7 @@ Deno.serve(async (request) => {
       usuarioId = funcionario.usuario_id;
       emailDestino = normalizeEmail(funcionario.email);
       nomeDestino = text(funcionario.nome);
+      contaJaExistia = true;
 
       if (!isValidEmail(emailDestino)) {
         return json(
@@ -133,6 +138,7 @@ Deno.serve(async (request) => {
       }
     } else {
       const perfil = await buscarPerfilPorEmail(admin, email);
+
       if (perfil.erro) {
         return json({ mensagem: perfil.erro }, perfil.status);
       }
@@ -142,12 +148,19 @@ Deno.serve(async (request) => {
 
       if (perfil.usuarioId) {
         usuarioId = perfil.usuarioId;
+        contaJaExistia = true;
       } else {
         const { data: convite, error: erroConvite } =
           await admin.auth.admin.inviteUserByEmail(email, {
             data: {
               nome,
+              marca_nome: "ConfirmaAi",
               casamento_nome: text(casamento.titulo),
+              evento_nome: text(casamento.titulo),
+              evento_tipo: text(casamento.tipo_evento),
+              evento_data: text(casamento.data_evento),
+              evento_horario: text(casamento.hora_evento),
+              evento_local: text(casamento.local_evento),
               casamento_id: casamentoId,
               criar_organizacao: false,
               precisa_definir_senha: true,
@@ -159,31 +172,41 @@ Deno.serve(async (request) => {
           usuarioId = convite.user.id;
           conviteEnviado = true;
         } else if (isExistingUserError(erroConvite)) {
-          const usuarioExistente = await buscarUsuarioAuthPorEmail(admin, email);
+          const usuarioExistente =
+            await buscarUsuarioAuthPorEmail(admin, email);
+
           if (!usuarioExistente) {
             return json(
               {
                 mensagem:
-                  "A conta já existe no Auth, mas não foi possível localizá-la para liberar o acesso.",
+                  "A conta já existe, mas não foi possível localizá-la para liberar o acesso.",
               },
               409,
             );
           }
-          usuarioId = usuarioExistente.id;
 
-          const { error: erroPerfil } = await admin.from("usuarios_app").upsert(
-            {
-              id: usuarioId,
-              nome: nomeDestino,
-              email: emailDestino,
-              ordem: 0,
-              ativo: true,
-            },
-            { onConflict: "id" },
-          );
+          usuarioId = usuarioExistente.id;
+          contaJaExistia = true;
+
+          const { error: erroPerfil } = await admin
+            .from("usuarios_app")
+            .upsert(
+              {
+                id: usuarioId,
+                nome: nomeDestino,
+                email: emailDestino,
+                ordem: 0,
+                ativo: true,
+              },
+              { onConflict: "id" },
+            );
+
           if (erroPerfil) {
             return json(
-              { mensagem: "Não foi possível reparar o perfil da conta existente." },
+              {
+                mensagem:
+                  "Não foi possível reparar o perfil da conta existente.",
+              },
               409,
             );
           }
@@ -223,18 +246,23 @@ Deno.serve(async (request) => {
       }
     }
 
-    const { error: erroVinculo } = await admin.from("membros_casamento").upsert(
-      {
-        casamento_id: casamentoId,
-        usuario_id: usuarioId,
-        papel: "funcionario",
-        ativo: true,
-        convite_aceito_em: null,
-        criado_por_usuario_id: solicitanteId,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "casamento_id,usuario_id" },
-    );
+    const contaJaCerimonialista =
+      await usuarioPossuiPerfilCerimonialista(admin, usuarioId);
+
+    const { error: erroVinculo } = await admin
+      .from("membros_casamento")
+      .upsert(
+        {
+          casamento_id: casamentoId,
+          usuario_id: usuarioId,
+          papel: "funcionario",
+          ativo: true,
+          convite_aceito_em: null,
+          criado_por_usuario_id: solicitanteId,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "casamento_id,usuario_id" },
+      );
 
     if (erroVinculo) {
       console.error("Erro ao liberar casamento", erroVinculo);
@@ -247,30 +275,28 @@ Deno.serve(async (request) => {
       );
     }
 
-    // Mantém o nome do casamento nos metadados da conta. O Supabase expõe
-    // esses dados nos templates de e-mail por meio de {{ .Data.casamento_nome }}.
-    // Para contas novas, o dado também é enviado no próprio convite acima.
     const metadadosPreparados = await atualizarMetadadosDoConvite(
       admin,
       usuarioId,
       nomeDestino,
       text(casamento.titulo),
       casamentoId,
+      text(casamento.tipo_evento),
+      text(casamento.data_evento),
+      text(casamento.hora_evento),
+      text(casamento.local_evento),
     );
 
     if (!metadadosPreparados) {
       return json(
         {
           mensagem:
-            "O acesso foi liberado, mas não foi possível preparar o e-mail com o nome do casamento.",
+            "O acesso foi liberado, mas não foi possível preparar o e-mail do evento.",
         },
         500,
       );
     }
 
-    // Uma conta nova já recebe o template de convite por inviteUserByEmail.
-    // Contas existentes recebem apenas um Magic Link. O aplicativo não tenta
-    // enviar uma segunda mensagem, evitando duplicidade e rate limit.
     const notificacao: ResultadoNotificacao = conviteEnviado
       ? { enviada: true, mensagem: null }
       : await enviarLinkDeAcesso(admin, emailDestino);
@@ -282,6 +308,8 @@ Deno.serve(async (request) => {
       convite_enviado: conviteEnviado,
       notificacao_enviada: notificacao.enviada,
       mensagem_notificacao: notificacao.mensagem,
+      conta_ja_existia: contaJaExistia,
+      conta_mista: contaJaCerimonialista,
     });
   } catch (error) {
     console.error(error);
@@ -341,6 +369,7 @@ async function buscarUsuarioAuthPorEmail(
     const encontrado = data.users.find(
       (usuario) => normalizeEmail(usuario.email) === email,
     );
+
     if (encontrado) return { id: encontrado.id };
     if (data.users.length < USUARIOS_POR_PAGINA) return null;
   }
@@ -348,12 +377,36 @@ async function buscarUsuarioAuthPorEmail(
   return null;
 }
 
+async function usuarioPossuiPerfilCerimonialista(
+  admin: AdminClient,
+  usuarioId: string,
+): Promise<boolean> {
+  const { data, error } = await admin
+    .from("membros_organizacao")
+    .select("organizacao_id")
+    .eq("usuario_id", usuarioId)
+    .eq("papel", "admin")
+    .eq("ativo", true)
+    .limit(1);
+
+  if (error) {
+    console.error("Erro ao verificar perfil de cerimonialista", error);
+    return false;
+  }
+
+  return (data?.length ?? 0) > 0;
+}
+
 async function atualizarMetadadosDoConvite(
   admin: AdminClient,
   usuarioId: string,
   nome: string,
-  casamentoNome: string,
+  eventoNome: string,
   casamentoId: string,
+  eventoTipo: string,
+  eventoData: string,
+  eventoHorario: string,
+  eventoLocal: string,
 ): Promise<boolean> {
   const { data: usuarioAtual, error: erroLeitura } =
     await admin.auth.admin.getUserById(usuarioId);
@@ -364,17 +417,24 @@ async function atualizarMetadadosDoConvite(
   }
 
   const metadadosAtuais = usuarioAtual.user.user_metadata ?? {};
-  const { error: erroAtualizacao } = await admin.auth.admin.updateUserById(
-    usuarioId,
-    {
+  const nomeAtual =
+    text(metadadosAtuais.nome) || text(metadadosAtuais.full_name);
+
+  const { error: erroAtualizacao } =
+    await admin.auth.admin.updateUserById(usuarioId, {
       user_metadata: {
         ...metadadosAtuais,
-        nome,
-        casamento_nome: casamentoNome,
+        nome: nomeAtual || nome,
+        marca_nome: "ConfirmaAi",
+        casamento_nome: eventoNome,
+        evento_nome: eventoNome,
+        evento_tipo: eventoTipo,
+        evento_data: eventoData,
+        evento_horario: eventoHorario,
+        evento_local: eventoLocal,
         casamento_id: casamentoId,
       },
-    },
-  );
+    });
 
   if (erroAtualizacao) {
     console.error("Erro ao atualizar metadados do convite", erroAtualizacao);
@@ -420,14 +480,17 @@ function friendlyAuthError(error: unknown, fallback: string): string {
   if (status === 429 || code === "over_email_send_rate_limit") {
     return "Muitos e-mails foram solicitados em pouco tempo. Aguarde pelo menos 60 segundos e tente novamente.";
   }
+
   if (code === "email_address_not_authorized") {
-    return "O provedor de e-mail do Supabase não está autorizado a enviar para este endereço. Configure um SMTP próprio no projeto.";
+    return "O provedor de e-mail não está autorizado a enviar para este endereço.";
   }
+
   if (code === "email_address_invalid") {
     return "O endereço de e-mail informado não é aceito pelo provedor.";
   }
+
   if (code === "otp_disabled") {
-    return "O envio de Magic Link está desativado nas configurações de autenticação.";
+    return "O envio do link de acesso está desativado nas configurações de autenticação.";
   }
 
   const message = authErrorMessage(error);

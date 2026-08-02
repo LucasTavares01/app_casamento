@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../modelos/modelos.dart';
 import '../servicos/supabase_servico.dart';
+import 'tela_importacao_lista.dart';
 
 class AbaCadastro extends StatefulWidget {
   const AbaCadastro({super.key});
@@ -616,7 +617,32 @@ class _AbaCadastroState extends State<AbaCadastro> {
             Tab(text: 'CONVIDADOS', icon: Icon(Icons.person_add)),
           ],
         ),
-        body: TabBarView(children: [_listaMesas(), _listaConvidados()]),
+        body: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const TelaImportacaoLista(),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.upload_file_outlined),
+                  label: const Text('Importar lista de convidados'),
+                ),
+              ),
+            ),
+            Expanded(
+              child: TabBarView(
+                children: [_listaMesas(), _listaConvidados()],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

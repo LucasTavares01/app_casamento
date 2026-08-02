@@ -29,26 +29,53 @@ class _AbaEquipeState extends State<AbaEquipe> {
     super.dispose();
   }
 
+  Future<void> _mostrarMensagem({
+    required String titulo,
+    required String mensagem,
+  }) {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(titulo),
+        content: Text(mensagem),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _convidar() async {
     final resultado = await showDialog<ResultadoConviteFuncionario>(
       context: context,
       builder: (_) => _DialogConvidarFuncionario(servico: _servico),
     );
-    if (resultado != null && mounted) {
-      _recarregar();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            resultado.notificacaoEnviada
-                ? 'Convite enviado. A pessoa receberá o acesso por e-mail.'
-                : resultado.mensagemNotificacao ??
-                      (resultado.conviteEnviado
-                          ? 'A conta foi preparada, mas não foi possível enviar o e-mail.'
-                          : 'O acesso foi liberado, mas não foi possível enviar o e-mail.'),
-          ),
-        ),
-      );
-    }
+    if (resultado == null || !mounted) return;
+
+    _recarregar();
+
+    final mensagem = resultado.contaMista
+        ? 'Este e-mail já pertencia a um cerimonialista. O perfil de '
+              'funcionário foi adicionado à mesma conta, sem alterar a senha.'
+        : resultado.notificacaoEnviada
+            ? 'Convite enviado com sucesso. A pessoa receberá o acesso por e-mail.'
+            : resultado.mensagemNotificacao ??
+                  (resultado.conviteEnviado
+                      ? 'A conta foi preparada, mas não foi possível enviar o e-mail.'
+                      : 'O acesso foi liberado, mas não foi possível enviar o e-mail.');
+
+    await _mostrarMensagem(
+      titulo: resultado.contaMista
+          ? 'Conta mista criada'
+          : resultado.notificacaoEnviada
+              ? 'Convite enviado'
+              : 'Acesso liberado',
+      mensagem: mensagem,
+    );
   }
 
   Future<void> _desativar(MembroEquipe membro) async {
@@ -75,10 +102,18 @@ class _AbaEquipeState extends State<AbaEquipe> {
     try {
       await _servico.desativar(membro);
       _recarregar();
+      if (mounted) {
+        await _mostrarMensagem(
+          titulo: 'Acesso removido',
+          mensagem:
+              '${membro.nome} não pode mais acessar este casamento.',
+        );
+      }
     } catch (erro) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Não foi possível remover: $erro')),
+        await _mostrarMensagem(
+          titulo: 'Não foi possível remover',
+          mensagem: erro.toString(),
         );
       }
     }
@@ -88,22 +123,26 @@ class _AbaEquipeState extends State<AbaEquipe> {
     try {
       final resultado = await _servico.convidarParaEsteCasamento(membro);
       _recarregar();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              resultado.notificacaoEnviada
-                  ? '${membro.nome} foi convidado e recebeu um e-mail.'
-                  : resultado.mensagemNotificacao ??
-                        '${membro.nome} foi incluído neste casamento, mas o e-mail não pôde ser enviado.',
-            ),
-          ),
-        );
-      }
+      if (!mounted) return;
+
+      await _mostrarMensagem(
+        titulo: resultado.notificacaoEnviada
+            ? 'Convite enviado'
+            : 'Acesso liberado',
+        mensagem: resultado.contaMista
+            ? '${membro.nome} continuará usando a mesma conta como '
+                  'cerimonialista e funcionário.'
+            : resultado.notificacaoEnviada
+                ? '${membro.nome} foi convidado e recebeu um e-mail.'
+                : resultado.mensagemNotificacao ??
+                      '${membro.nome} foi incluído neste casamento, mas o '
+                          'e-mail não pôde ser enviado.',
+      );
     } catch (erro) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Não foi possível incluir: $erro')),
+        await _mostrarMensagem(
+          titulo: 'Não foi possível incluir',
+          mensagem: erro.toString(),
         );
       }
     }
@@ -115,7 +154,8 @@ class _AbaEquipeState extends State<AbaEquipe> {
       builder: (context) => AlertDialog(
         title: const Text('Excluir funcionário da equipe?'),
         content: Text(
-          '${membro.nome} será removido da sua lista e perderá acesso a todos os seus casamentos. A conta da pessoa não será apagada.',
+          '${membro.nome} será removido da sua lista e perderá acesso a todos '
+          'os seus casamentos. A conta da pessoa não será apagada.',
         ),
         actions: [
           TextButton(
@@ -135,14 +175,16 @@ class _AbaEquipeState extends State<AbaEquipe> {
       await _servico.removerDaEquipe(membro);
       _recarregar();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${membro.nome} foi removido da equipe.')),
+        await _mostrarMensagem(
+          titulo: 'Funcionário removido',
+          mensagem: '${membro.nome} foi removido da equipe.',
         );
       }
     } catch (erro) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Não foi possível excluir: $erro')),
+        await _mostrarMensagem(
+          titulo: 'Não foi possível excluir',
+          mensagem: erro.toString(),
         );
       }
     }
@@ -305,8 +347,19 @@ class _DialogConvidarFuncionarioState
       }
     } catch (erro) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Não foi possível enviar o convite: $erro')),
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Não foi possível enviar'),
+            content: Text(erro.toString()),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
         );
       }
     } finally {

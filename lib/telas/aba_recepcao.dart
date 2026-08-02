@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../modelos/modelos.dart';
+import '../servicos/casamento_atual_servico.dart';
 import '../servicos/supabase_servico.dart';
 import 'tela_conflitos.dart';
 
@@ -453,11 +454,12 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
 
     final alerta = alertas.first;
     final quantidadeExtra = alertas.length - 1;
+    final somenteLeitura = CasamentoAtualServico.instance.somenteLeitura;
 
     return Material(
       color: Colors.red.shade50,
       child: InkWell(
-        onTap: alerta.conflitoServidor
+        onTap: !somenteLeitura && alerta.conflitoServidor
             ? () => _abrirConflitos(alerta.id)
             : null,
         child: Container(
@@ -479,7 +481,9 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      alerta.titulo,
+                      somenteLeitura
+                          ? 'Histórico preservado (somente leitura)'
+                          : alerta.titulo,
                       style: TextStyle(
                         color: Colors.red.shade800,
                         fontWeight: FontWeight.bold,
@@ -487,7 +491,10 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      alerta.mensagem,
+                      somenteLeitura
+                          ? 'Este casamento foi encerrado; nenhuma alteração '
+                              'pode ser registrada.'
+                          : alerta.mensagem,
                       style: TextStyle(
                         color: Colors.red.shade900,
                         fontSize: 13,
@@ -508,7 +515,7 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                   ],
                 ),
               ),
-              if (alerta.conflitoServidor)
+              if (alerta.conflitoServidor && !somenteLeitura)
                 const Padding(
                   padding: EdgeInsets.only(left: 6, top: 8),
                   child: Icon(Icons.chevron_right),
@@ -527,6 +534,7 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
   }) {
     final possuiMesa = mesa.id.isNotEmpty && mesa.numero >= 0;
     final temAlerta = convidado.temConflito || possuiAlerta;
+    final somenteLeitura = CasamentoAtualServico.instance.somenteLeitura;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 8, 12),
@@ -604,6 +612,11 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 8),
               child: Icon(Icons.warning_amber, color: Colors.amber, size: 38),
+            )
+          else if (somenteLeitura)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8),
+              child: Icon(Icons.lock_outline, color: Colors.grey, size: 34),
             )
           else if (convidado.chegou)
             IconButton(

@@ -26,11 +26,15 @@ class ResultadoConviteFuncionario {
   const ResultadoConviteFuncionario({
     required this.conviteEnviado,
     required this.notificacaoEnviada,
+    required this.contaJaExistia,
+    required this.contaMista,
     this.mensagemNotificacao,
   });
 
   final bool conviteEnviado;
   final bool notificacaoEnviada;
+  final bool contaJaExistia;
+  final bool contaMista;
   final String? mensagemNotificacao;
 }
 
@@ -152,6 +156,8 @@ class EquipeServico {
     return ResultadoConviteFuncionario(
       conviteEnviado: dados['convite_enviado'] != false,
       notificacaoEnviada: dados['notificacao_enviada'] == true,
+      contaJaExistia: dados['conta_ja_existia'] == true,
+      contaMista: dados['conta_mista'] == true,
       mensagemNotificacao: dados['mensagem_notificacao']?.toString(),
     );
   }
@@ -174,6 +180,8 @@ class EquipeServico {
     return ResultadoConviteFuncionario(
       conviteEnviado: dados['convite_enviado'] == true,
       notificacaoEnviada: dados['notificacao_enviada'] == true,
+      contaJaExistia: dados['conta_ja_existia'] == true,
+      contaMista: dados['conta_mista'] == true,
       mensagemNotificacao: dados['mensagem_notificacao']?.toString(),
     );
   }

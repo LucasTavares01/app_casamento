@@ -52,6 +52,7 @@ class SupabaseServico {
   /// A operação também fica registrada na fila para ser enviada ao
   /// Supabase quando o aplicativo estiver online.
   Future<void> adicionarMesa(int numero, String? detalhe) async {
+    _exigirEdicao();
     final usuarioId = _obterUsuarioAtualId();
     final usuarioNome = _obterUsuarioAtualNome();
     final id = _uuid.v4();
@@ -97,6 +98,7 @@ class SupabaseServico {
 
   /// Edita uma mesa no banco local.
   Future<void> editarMesa(String id, int numero, String? detalhe) async {
+    _exigirEdicao();
     final usuarioId = _obterUsuarioAtualId();
     final usuarioNome = _obterUsuarioAtualNome();
     final agora = DateTime.now().toUtc();
@@ -155,6 +157,7 @@ class SupabaseServico {
   /// Os convidados alocados nela ficam sem mesa, como já era informado
   /// pela tela de confirmação.
   Future<void> excluirMesa(String id) async {
+    _exigirEdicao();
     final usuarioId = _obterUsuarioAtualId();
     final usuarioNome = _obterUsuarioAtualNome();
     final agora = DateTime.now().toUtc();
@@ -261,6 +264,7 @@ class SupabaseServico {
 
   /// Adiciona um convidado no banco local.
   Future<void> adicionarConvidado(String nome, String? mesaId) async {
+    _exigirEdicao();
     final usuarioId = _obterUsuarioAtualId();
     final usuarioNome = _obterUsuarioAtualNome();
     final id = _uuid.v4();
@@ -310,6 +314,7 @@ class SupabaseServico {
 
   /// Edita um convidado no banco local.
   Future<void> editarConvidado(String id, String nome, String? mesaId) async {
+    _exigirEdicao();
     final usuarioId = _obterUsuarioAtualId();
     final usuarioNome = _obterUsuarioAtualNome();
     final agora = DateTime.now().toUtc();
@@ -378,6 +383,7 @@ class SupabaseServico {
 
   /// Exclui um convidado de forma lógica.
   Future<void> excluirConvidado(String id) async {
+    _exigirEdicao();
     final usuarioId = _obterUsuarioAtualId();
     final usuarioNome = _obterUsuarioAtualNome();
     final agora = DateTime.now().toUtc();
@@ -606,6 +612,7 @@ class SupabaseServico {
     required String resolucao,
     String? novaMesaId,
   }) async {
+    _exigirEdicao();
     final usuarioId = _obterUsuarioAtualId();
 
     await _supabase.rpc(
@@ -625,6 +632,7 @@ class SupabaseServico {
     required String conflitoId,
     required String resolucao,
   }) async {
+    _exigirEdicao();
     await _supabase.rpc(
       'resolver_conflito_generico_v1',
       params: {
@@ -647,6 +655,7 @@ class SupabaseServico {
     required String convidadoId,
     required String novaMesaId,
   }) async {
+    _exigirEdicao();
     await _supabase.rpc(
       'realocar_convidado_apos_exclusao_v1',
       params: {
@@ -705,6 +714,7 @@ class SupabaseServico {
     required bool chegou,
     required String tipoAcao,
   }) async {
+    _exigirEdicao();
     final usuarioId = _obterUsuarioAtualId();
     final usuarioNome = _obterUsuarioAtualNome();
 
@@ -806,6 +816,7 @@ class SupabaseServico {
     String sobrenome,
     String ocupacao,
   ) async {
+    _exigirEdicao();
     await _supabase.from('staff').insert({
       'casamento_id': _casamentoAtualId,
       'nome': nome,
@@ -823,6 +834,7 @@ class SupabaseServico {
   }
 
   Future<void> enviarMensagem(String staffId, String mensagem) async {
+    _exigirEdicao();
     await _supabase.from('chat').insert({
       'casamento_id': _casamentoAtualId,
       'staff_id': staffId,
@@ -844,6 +856,10 @@ class SupabaseServico {
   // ============================================================
 
   String get _casamentoAtualId => CasamentoAtualServico.instance.casamentoId;
+
+  void _exigirEdicao() {
+    CasamentoAtualServico.instance.exigirEdicao();
+  }
 
   /// Retorna o usuário que entrou no aplicativo.
   String _obterUsuarioAtualId() {

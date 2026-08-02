@@ -75,7 +75,7 @@ Deno.serve(async (request) => {
 
     if (!casamentoId || !dados || typeof dados !== "object") {
       return jsonResponse(
-        { mensagem: "Os dados do casamento estão incompletos." },
+        { mensagem: "Os dados do evento estão incompletos." },
         400,
       );
     }
@@ -232,7 +232,7 @@ async function validateAdminAccess(
   if (casamentoError || !casamento) {
     return {
       valid: false,
-      message: "Casamento não encontrado.",
+      message: "Evento não encontrado.",
       status: 404,
     };
   }
@@ -279,7 +279,7 @@ async function validateAdminAccess(
 
 function buildPrompt(serializedData: string): string {
   return `
-Você é um analista de eventos especializado em recepção e check-in de casamentos.
+Você é um analista de eventos especializado em recepção e check-in.
 
 Analise SOMENTE os dados JSON fornecidos abaixo e gere conteúdo para um dashboard em Excel.
 

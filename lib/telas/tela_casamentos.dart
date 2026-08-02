@@ -1,14 +1,19 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../servicos/casamento_atual_servico.dart';
 import '../servicos/relatorio_excel_servico.dart';
 import '../servicos/sessao_servico.dart';
 import '../servicos/sincronizacao_servico.dart';
+import '../modelos/tipos_evento.dart';
 import 'porta_entrada.dart';
 import 'tela_conta.dart';
 import 'tela_principal.dart';
 
-enum _AcaoMenuCasamento { arquivar, restaurar, excluir }
+enum _AcaoMenuCasamento { editar, arquivar, restaurar, excluir }
+
+enum _ModoPerfil { funcionario, cerimonialista }
 
 class TelaCasamentos extends StatefulWidget {
   const TelaCasamentos({super.key});
@@ -18,7 +23,7 @@ class TelaCasamentos extends StatefulWidget {
 }
 
 class _TelaCasamentosState extends State<TelaCasamentos>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final CasamentoAtualServico _casamentos = CasamentoAtualServico.instance;
   final SincronizacaoServico _sincronizacao = SincronizacaoServico.instance;
   final TextEditingController _pesquisa = TextEditingController();
@@ -29,23 +34,40 @@ class _TelaCasamentosState extends State<TelaCasamentos>
   String? _casamentoProcessandoId;
   String? _acaoEmAndamento;
   int _abaSelecionada = 0;
+  bool _podeCriarCasamentos = false;
+  PapeisContaAtual _papeis = const PapeisContaAtual(
+    cerimonialista: false,
+    funcionario: false,
+  );
+  _ModoPerfil _modoPerfil = _ModoPerfil.funcionario;
+  bool _habilitandoCerimonialista = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _casamentosEmTempoReal = _criarStreamCasamentos();
     _abasController = TabController(length: 2, vsync: this);
     _abasController.addListener(_aoTrocarAba);
     _pesquisa.addListener(_aoPesquisar);
+    unawaited(_carregarPermissao());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _abasController.removeListener(_aoTrocarAba);
     _abasController.dispose();
     _pesquisa.removeListener(_aoPesquisar);
     _pesquisa.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _recarregar();
+    }
   }
 
   Stream<List<CasamentoAtual>> _criarStreamCasamentos() =>
@@ -61,13 +83,135 @@ class _TelaCasamentosState extends State<TelaCasamentos>
     if (mounted) setState(() {});
   }
 
+  Future<void> _carregarPermissao() async {
+    try {
+      final papeis = await _casamentos.obterPapeisContaAtual();
+      if (mounted) {
+        setState(() {
+          _papeis = papeis;
+          _podeCriarCasamentos = papeis.cerimonialista;
+          if (papeis.cerimonialista) {
+            _modoPerfil = _ModoPerfil.cerimonialista;
+          } else if (papeis.funcionario) {
+            _modoPerfil = _ModoPerfil.funcionario;
+          }
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _podeCriarCasamentos = false);
+      }
+    }
+  }
+
+  Future<void> _habilitarCerimonialista() async {
+    if (_habilitandoCerimonialista) return;
+
+    setState(() => _habilitandoCerimonialista = true);
+    try {
+      await SessaoServico.instance.habilitarPerfilCerimonialista(
+        nome: SessaoServico.instance.nomeExibicaoAtual,
+      );
+      await _carregarPermissao();
+      if (!mounted) return;
+      setState(() => _modoPerfil = _ModoPerfil.cerimonialista);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Conta de cerimonialista habilitada com sucesso.'),
+        ),
+      );
+    } catch (erro) {
+      _mostrarErro('Não foi possível habilitar o perfil: $erro');
+    } finally {
+      if (mounted) setState(() => _habilitandoCerimonialista = false);
+    }
+  }
+
+  Widget _construirSeletorPerfis() {
+    final cerimonialistaAtivo = _modoPerfil == _ModoPerfil.cerimonialista;
+    final funcionarioDisponivel = _papeis.funcionario;
+    final cerimonialistaDisponivel = _papeis.cerimonialista;
+
+    Widget botao({
+      required String texto,
+      required bool selecionado,
+      required bool disponivel,
+      required VoidCallback aoTocar,
+      required IconData icone,
+    }) {
+      return Expanded(
+        child: SizedBox(
+          height: 48,
+          child: disponivel && selecionado
+              ? FilledButton.icon(
+                  onPressed: aoTocar,
+                  icon: Icon(icone),
+                  label: Text(texto),
+                )
+              : OutlinedButton.icon(
+                  onPressed: aoTocar,
+                  icon: Icon(disponivel ? icone : Icons.lock_outline, size: 19),
+                  label: Text(texto),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: disponivel
+                        ? null
+                        : Theme.of(context).colorScheme.onSurfaceVariant,
+                    side: BorderSide(
+                      color: disponivel
+                          ? Theme.of(context).colorScheme.outline
+                          : Theme.of(context).colorScheme.outlineVariant,
+                    ),
+                  ),
+                ),
+        ),
+      );
+    }
+
+    return Row(
+      children: [
+        botao(
+          texto: 'Funcionário',
+          selecionado: !cerimonialistaAtivo,
+          disponivel: funcionarioDisponivel,
+          aoTocar: () {
+            if (!funcionarioDisponivel) {
+              unawaited(_recarregarPermissaoAoTentarFuncionario());
+              return;
+            }
+            setState(() => _modoPerfil = _ModoPerfil.funcionario);
+          },
+          icone: Icons.badge_outlined,
+        ),
+        const SizedBox(width: 10),
+        botao(
+          texto: 'Cerimonialista',
+          selecionado: cerimonialistaAtivo,
+          disponivel: cerimonialistaDisponivel,
+          aoTocar: cerimonialistaDisponivel
+              ? () => setState(() => _modoPerfil = _ModoPerfil.cerimonialista)
+              : _habilitarCerimonialista,
+          icone: Icons.favorite_outline,
+        ),
+      ],
+    );
+  }
+
+  Future<void> _recarregarPermissaoAoTentarFuncionario() async {
+    await _carregarPermissao();
+    if (!mounted) return;
+    if (_papeis.funcionario) {
+      setState(() => _modoPerfil = _ModoPerfil.funcionario);
+      return;
+    }
+    _mostrarErro('O perfil de funcionário depende de um convite.');
+  }
+
   void _recarregar() {
     setState(() => _casamentosEmTempoReal = _criarStreamCasamentos());
+    unawaited(_carregarPermissao());
   }
 
   Future<void> _abrir(CasamentoAtual casamento) async {
-    if (casamento.status == 'arquivado') return;
-
     try {
       await _casamentos.selecionar(casamento);
       if (!mounted) return;
@@ -88,15 +232,27 @@ class _TelaCasamentosState extends State<TelaCasamentos>
     await _abrir(criado);
   }
 
+  Future<void> _editarCasamento(CasamentoAtual casamento) async {
+    if (!casamento.ehAdmin || casamento.encerrado) return;
+    await showDialog<CasamentoAtual>(
+      context: context,
+      builder: (_) => _DialogNovoCasamento(
+        servico: _casamentos,
+        existente: casamento,
+      ),
+    );
+    if (mounted) _recarregar();
+  }
+
   Future<void> _finalizar(CasamentoAtual casamento) async {
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Encerrar casamento?'),
+        title: const Text('Encerrar evento?'),
         content: Text(
-          'O casamento “${casamento.descricao}” será finalizado e os '
-          'funcionários perderão o acesso imediatamente. O histórico e os '
-          'relatórios continuarão disponíveis para a administradora.',
+          'O evento “${casamento.descricao}” será finalizado. A equipe '
+          'funcionários continuarão vendo o evento em Arquivados, apenas '
+          'para consulta, sem poder alterar lista, mesas ou chegadas.',
         ),
         actions: [
           TextButton(
@@ -105,7 +261,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Encerrar casamento'),
+            child: const Text('Encerrar evento'),
           ),
         ],
       ),
@@ -117,8 +273,8 @@ class _TelaCasamentosState extends State<TelaCasamentos>
       casamento: casamento,
       acao: 'encerrando',
       executar: () => _casamentos.finalizarCasamento(casamento),
-      sucesso: 'Casamento encerrado com sucesso.',
-      erro: 'Não foi possível encerrar o casamento',
+      sucesso: 'Evento encerrado com sucesso.',
+      erro: 'Não foi possível encerrar o evento',
     );
   }
 
@@ -126,7 +282,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
     final confirmar = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Arquivar casamento?'),
+        title: const Text('Arquivar evento?'),
         content: Text(
           '“${casamento.descricao}” sairá da lista principal, mas nenhum dado '
           'será apagado. Você poderá restaurá-lo pela aba Arquivados.',
@@ -150,8 +306,8 @@ class _TelaCasamentosState extends State<TelaCasamentos>
       casamento: casamento,
       acao: 'arquivando',
       executar: () => _casamentos.arquivarCasamento(casamento),
-      sucesso: 'Casamento arquivado.',
-      erro: 'Não foi possível arquivar o casamento',
+      sucesso: 'Evento arquivado.',
+      erro: 'Não foi possível arquivar o evento',
     );
   }
 
@@ -160,8 +316,8 @@ class _TelaCasamentosState extends State<TelaCasamentos>
       casamento: casamento,
       acao: 'restaurando',
       executar: () => _casamentos.restaurarCasamentoArquivado(casamento),
-      sucesso: 'Casamento restaurado para a lista principal.',
-      erro: 'Não foi possível restaurar o casamento',
+      sucesso: 'Evento restaurado para a lista principal.',
+      erro: 'Não foi possível restaurar o evento',
     );
   }
 
@@ -199,8 +355,8 @@ class _TelaCasamentosState extends State<TelaCasamentos>
       casamento: casamento,
       acao: 'excluindo',
       executar: () => _casamentos.excluirCasamentoDefinitivamente(casamento),
-      sucesso: 'Casamento excluído definitivamente.',
-      erro: 'Não foi possível excluir o casamento',
+      sucesso: 'Evento excluído definitivamente.',
+      erro: 'Não foi possível excluir o evento',
     );
   }
 
@@ -300,7 +456,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
-        title: const Text('Meus casamentos'),
+        title: const Text('Meus eventos'),
         actions: [
           IconButton(
             tooltip: 'Configurações da conta',
@@ -324,15 +480,16 @@ class _TelaCasamentosState extends State<TelaCasamentos>
       floatingActionButton: StreamBuilder<List<CasamentoAtual>>(
         stream: _casamentosEmTempoReal,
         builder: (context, snapshot) {
-          final podeCriar = snapshot.data?.any((item) => item.ehAdmin) ?? true;
-          if (!podeCriar || _abaSelecionada != 0) {
+          if (!_podeCriarCasamentos ||
+              _modoPerfil != _ModoPerfil.cerimonialista ||
+              _abaSelecionada != 0) {
             return const SizedBox.shrink();
           }
 
           return FloatingActionButton.extended(
             onPressed: _novoCasamento,
             icon: const Icon(Icons.add),
-            label: const Text('Novo casamento'),
+            label: const Text('Novo evento'),
           );
         },
       ),
@@ -348,12 +505,18 @@ class _TelaCasamentosState extends State<TelaCasamentos>
             return const Center(child: CircularProgressIndicator());
           }
 
-          final todos = snapshot.data!;
+          final todos = snapshot.data!
+              .where(
+                (casamento) => _modoPerfil == _ModoPerfil.cerimonialista
+                    ? casamento.ehAdmin
+                    : !casamento.ehAdmin,
+              )
+              .toList();
           final ativos = todos
-              .where((casamento) => casamento.status != 'arquivado')
+              .where((casamento) => !_estaArquivadoNaVisao(casamento))
               .toList();
           final arquivados = todos
-              .where((casamento) => casamento.status == 'arquivado')
+              .where((casamento) => _estaArquivadoNaVisao(casamento))
               .toList();
 
           final listaAtual = _abaSelecionada == 0 ? ativos : arquivados;
@@ -362,12 +525,16 @@ class _TelaCasamentosState extends State<TelaCasamentos>
           return Column(
             children: [
               Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                child: _construirSeletorPerfis(),
+              ),
+              Padding(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
                 child: TextField(
                   controller: _pesquisa,
                   textInputAction: TextInputAction.search,
                   decoration: InputDecoration(
-                    hintText: 'Pesquisar casamento',
+                    hintText: 'Pesquisar evento',
                     prefixIcon: const Icon(Icons.search),
                     suffixIcon: _pesquisa.text.isEmpty
                         ? null
@@ -387,7 +554,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
                 child: TabBar(
                   controller: _abasController,
                   tabs: [
-                    Tab(text: 'Meus casamentos (${ativos.length})'),
+                    Tab(text: 'Meus eventos (${ativos.length})'),
                     Tab(text: 'Arquivados (${arquivados.length})'),
                   ],
                 ),
@@ -398,8 +565,9 @@ class _TelaCasamentosState extends State<TelaCasamentos>
                     ? _EstadoListaVazia(
                         pesquisando: _pesquisa.text.trim().isNotEmpty,
                         arquivados: _abaSelecionada == 1,
-                        podeCriar: todos.any((item) => item.ehAdmin) ||
-                            todos.isEmpty,
+                        podeCriar:
+                            _podeCriarCasamentos &&
+                            _modoPerfil == _ModoPerfil.cerimonialista,
                         onCriar: _novoCasamento,
                       )
                     : RefreshIndicator(
@@ -413,8 +581,12 @@ class _TelaCasamentosState extends State<TelaCasamentos>
                             casamento: filtrados[index],
                             processando:
                                 _casamentoProcessandoId == filtrados[index].id,
+                            arquivadoNaLista: _estaArquivadoNaVisao(
+                              filtrados[index],
+                            ),
                             acaoEmAndamento: _acaoEmAndamento,
                             onAbrir: () => _abrir(filtrados[index]),
+                            onEditar: () => _editarCasamento(filtrados[index]),
                             onEncerrar: () => _finalizar(filtrados[index]),
                             onRelatorio: () =>
                                 _gerarRelatorio(filtrados[index]),
@@ -430,6 +602,12 @@ class _TelaCasamentosState extends State<TelaCasamentos>
         },
       ),
     );
+  }
+
+  bool _estaArquivadoNaVisao(CasamentoAtual casamento) {
+    return casamento.status == 'arquivado' ||
+        (_modoPerfil == _ModoPerfil.funcionario &&
+            casamento.status == 'finalizado');
   }
 
   List<CasamentoAtual> _filtrarCasamentos(List<CasamentoAtual> casamentos) {
@@ -470,8 +648,10 @@ class _TelaCasamentosState extends State<TelaCasamentos>
 class _CardCasamento extends StatelessWidget {
   final CasamentoAtual casamento;
   final bool processando;
+  final bool arquivadoNaLista;
   final String? acaoEmAndamento;
   final VoidCallback onAbrir;
+  final VoidCallback onEditar;
   final VoidCallback onEncerrar;
   final VoidCallback onRelatorio;
   final VoidCallback onArquivar;
@@ -481,8 +661,10 @@ class _CardCasamento extends StatelessWidget {
   const _CardCasamento({
     required this.casamento,
     required this.processando,
+    required this.arquivadoNaLista,
     required this.acaoEmAndamento,
     required this.onAbrir,
+    required this.onEditar,
     required this.onEncerrar,
     required this.onRelatorio,
     required this.onArquivar,
@@ -493,14 +675,15 @@ class _CardCasamento extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tema = Theme.of(context);
-    final arquivado = casamento.status == 'arquivado';
+    final arquivado = arquivadoNaLista;
     final finalizado = casamento.status == 'finalizado';
+    final somenteLeitura = casamento.encerrado;
 
     return Card(
       clipBehavior: Clip.antiAlias,
       elevation: 1,
       child: InkWell(
-        onTap: arquivado || processando ? null : onAbrir,
+        onTap: processando ? null : onAbrir,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(18, 16, 12, 14),
           child: Column(
@@ -517,9 +700,7 @@ class _CardCasamento extends StatelessWidget {
                       borderRadius: BorderRadius.circular(15),
                     ),
                     child: Icon(
-                      casamento.ehAdmin
-                          ? Icons.favorite_outline
-                          : Icons.badge_outlined,
+                      casamento.tipoEvento.icone,
                       color: _corTextoStatus(tema.colorScheme),
                     ),
                   ),
@@ -529,7 +710,7 @@ class _CardCasamento extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          casamento.descricao,
+                          casamento.titulo,
                           style: tema.textTheme.titleLarge?.copyWith(
                             fontWeight: FontWeight.w700,
                           ),
@@ -541,6 +722,13 @@ class _CardCasamento extends StatelessWidget {
                             color: tema.colorScheme.onSurfaceVariant,
                           ),
                         ),
+                        const SizedBox(height: 2),
+                        Text(
+                          casamento.tipoEvento.rotulo,
+                          style: tema.textTheme.bodySmall?.copyWith(
+                            color: tema.colorScheme.primary,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -550,6 +738,9 @@ class _CardCasamento extends StatelessWidget {
                       enabled: !processando,
                       onSelected: (acao) {
                         switch (acao) {
+                          case _AcaoMenuCasamento.editar:
+                            onEditar();
+                            break;
                           case _AcaoMenuCasamento.arquivar:
                             onArquivar();
                             break;
@@ -562,6 +753,15 @@ class _CardCasamento extends StatelessWidget {
                         }
                       },
                       itemBuilder: (context) => [
+                        if (!arquivado)
+                          const PopupMenuItem(
+                            value: _AcaoMenuCasamento.editar,
+                            child: ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: Icon(Icons.edit_outlined),
+                              title: Text('Editar informações'),
+                            ),
+                          ),
                         if (arquivado)
                           const PopupMenuItem(
                             value: _AcaoMenuCasamento.restaurar,
@@ -590,7 +790,7 @@ class _CardCasamento extends StatelessWidget {
                         ),
                       ],
                     )
-                  else if (!arquivado)
+                  else
                     const Padding(
                       padding: EdgeInsets.only(top: 10, right: 4),
                       child: Icon(Icons.chevron_right),
@@ -603,6 +803,20 @@ class _CardCasamento extends StatelessWidget {
                 valor: _rotuloStatus(casamento.status),
                 icone: Icons.info_outline,
               ),
+              const SizedBox(height: 9),
+              _InfoCasamento(
+                rotulo: 'Tipo',
+                valor: casamento.tipoEvento.rotulo,
+                icone: casamento.tipoEvento.icone,
+              ),
+              if (casamento.descricaoPessoas.isNotEmpty) ...[
+                const SizedBox(height: 9),
+                _InfoCasamento(
+                  rotulo: casamento.rotuloPessoas ?? casamento.tipoEvento.rotuloPessoa,
+                  valor: casamento.descricaoPessoas,
+                  icone: Icons.person_outline,
+                ),
+              ],
               const SizedBox(height: 9),
               _InfoCasamento(
                 rotulo: 'Data',
@@ -628,7 +842,10 @@ class _CardCasamento extends StatelessWidget {
               if (arquivado) ...[
                 const SizedBox(height: 14),
                 Text(
-                  'Restaure este casamento para acessá-lo novamente.',
+                  somenteLeitura
+                      ? 'Este evento foi encerrado e está disponível '
+                            'somente para leitura.'
+                      : 'Restaure este evento para acessá-lo novamente.',
                   style: tema.textTheme.bodySmall?.copyWith(
                     color: tema.colorScheme.onSurfaceVariant,
                   ),
@@ -665,7 +882,7 @@ class _CardCasamento extends StatelessWidget {
                         FilledButton.tonalIcon(
                           onPressed: onEncerrar,
                           icon: const Icon(Icons.event_busy_outlined),
-                          label: const Text('Encerrar casamento'),
+                          label: const Text('Encerrar evento'),
                         ),
                     ],
                   ),
@@ -708,13 +925,13 @@ class _CardCasamento extends StatelessWidget {
       case 'relatorio':
         return 'Gerando relatório...';
       case 'encerrando':
-        return 'Encerrando casamento...';
+        return 'Encerrando evento...';
       case 'arquivando':
-        return 'Arquivando casamento...';
+        return 'Arquivando evento...';
       case 'restaurando':
-        return 'Restaurando casamento...';
+        return 'Restaurando evento...';
       case 'excluindo':
-        return 'Excluindo casamento...';
+        return 'Excluindo evento...';
       default:
         return 'Processando...';
     }
@@ -749,12 +966,7 @@ class _InfoCasamento extends StatelessWidget {
             ),
           ),
         ),
-        Expanded(
-          child: Text(
-            valor,
-            style: tema.textTheme.bodyMedium,
-          ),
-        ),
+        Expanded(child: Text(valor, style: tema.textTheme.bodyMedium)),
       ],
     );
   }
@@ -776,7 +988,7 @@ class _EstadoErro extends StatelessWidget {
             const Icon(Icons.cloud_off_outlined, size: 48),
             const SizedBox(height: 12),
             const Text(
-              'Não foi possível carregar seus casamentos.',
+              'Não foi possível carregar seus eventos.',
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 12),
@@ -807,15 +1019,15 @@ class _EstadoListaVazia extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final titulo = pesquisando
-        ? 'Nenhum casamento encontrado'
+        ? 'Nenhum evento encontrado'
         : arquivados
-            ? 'Nenhum casamento arquivado'
-            : 'Você ainda não tem casamentos cadastrados';
+        ? 'Nenhum evento arquivado'
+        : 'Você ainda não tem eventos cadastrados';
     final descricao = pesquisando
         ? 'Tente pesquisar por outro nome, status, data ou local.'
         : arquivados
-            ? 'Os casamentos arquivados aparecerão aqui.'
-            : 'Crie o primeiro evento para montar a lista e convidar sua equipe.';
+        ? 'Os eventos arquivados aparecerão aqui.'
+        : 'Crie o primeiro evento para montar a lista e convidar sua equipe.';
 
     return Center(
       child: SingleChildScrollView(
@@ -827,8 +1039,8 @@ class _EstadoListaVazia extends StatelessWidget {
               pesquisando
                   ? Icons.search_off_outlined
                   : arquivados
-                      ? Icons.inventory_2_outlined
-                      : Icons.favorite_border,
+                  ? Icons.inventory_2_outlined
+                  : Icons.event_outlined,
               size: 60,
             ),
             const SizedBox(height: 16),
@@ -844,7 +1056,7 @@ class _EstadoListaVazia extends StatelessWidget {
               ElevatedButton.icon(
                 onPressed: onCriar,
                 icon: const Icon(Icons.add),
-                label: const Text('Criar primeiro casamento'),
+                label: const Text('Criar primeiro evento'),
               ),
             ],
           ],
@@ -882,7 +1094,9 @@ String _formatarHorario(String? horario) {
 
 class _DialogNovoCasamento extends StatefulWidget {
   final CasamentoAtualServico servico;
-  const _DialogNovoCasamento({required this.servico});
+  final CasamentoAtual? existente;
+
+  const _DialogNovoCasamento({required this.servico, this.existente});
 
   @override
   State<_DialogNovoCasamento> createState() => _DialogNovoCasamentoState();
@@ -890,19 +1104,46 @@ class _DialogNovoCasamento extends StatefulWidget {
 
 class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
   final _formKey = GlobalKey<FormState>();
-  final _titulo = TextEditingController();
-  final _pessoa1 = TextEditingController();
-  final _pessoa2 = TextEditingController();
-  final _local = TextEditingController();
+  late final TextEditingController _titulo;
+  late final TextEditingController _pessoas;
+  late final TextEditingController _local;
+  late TipoEvento _tipo;
   DateTime? _data;
   TimeOfDay? _hora;
   bool _salvando = false;
+  bool _validouData = false;
+  bool _validouHora = false;
+
+  bool get _editando => widget.existente != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final existente = widget.existente;
+    final nomesAntigos = [existente?.nomePessoa1, existente?.nomePessoa2]
+        .whereType<String>()
+        .where((nome) => nome.trim().isNotEmpty)
+        .join(' e ');
+    _titulo = TextEditingController(text: existente?.titulo ?? '');
+    _pessoas = TextEditingController(text: nomesAntigos);
+    _local = TextEditingController(text: existente?.localEvento ?? '');
+    _tipo = existente?.tipoEvento ?? TipoEvento.casamento;
+    _data = existente?.dataEvento;
+    final hora = existente?.horarioEvento;
+    if (hora != null && hora.length >= 5) {
+      final partes = hora.split(':');
+      final horas = int.tryParse(partes.first);
+      final minutos = int.tryParse(partes[1]);
+      if (horas != null && minutos != null) {
+        _hora = TimeOfDay(hour: horas, minute: minutos);
+      }
+    }
+  }
 
   @override
   void dispose() {
     _titulo.dispose();
-    _pessoa1.dispose();
-    _pessoa2.dispose();
+    _pessoas.dispose();
     _local.dispose();
     super.dispose();
   }
@@ -926,24 +1167,40 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
   }
 
   Future<void> _salvar() async {
-    if (!_formKey.currentState!.validate()) return;
+    final valido = _formKey.currentState!.validate();
+    setState(() {
+      _validouData = true;
+      _validouHora = true;
+    });
+    if (!valido || _data == null || _hora == null) return;
+
     setState(() => _salvando = true);
+    final horario =
+        '${_hora!.hour.toString().padLeft(2, '0')}:${_hora!.minute.toString().padLeft(2, '0')}:00';
     try {
-      final casamento = await widget.servico.criarCasamento(
-        titulo: _titulo.text,
-        nomePessoa1: _pessoa1.text,
-        nomePessoa2: _pessoa2.text,
-        dataEvento: _data,
-        horarioEvento: _hora == null
-            ? null
-            : '${_hora!.hour.toString().padLeft(2, '0')}:${_hora!.minute.toString().padLeft(2, '0')}:00',
-        localEvento: _local.text,
-      );
-      if (mounted) Navigator.pop(context, casamento);
+      final evento = _editando
+          ? await widget.servico.atualizarCasamento(
+              casamento: widget.existente!,
+              titulo: _titulo.text,
+              tipoEvento: _tipo,
+              nomePessoa1: _pessoas.text,
+              dataEvento: _data!,
+              horarioEvento: horario,
+              localEvento: _local.text,
+            )
+          : await widget.servico.criarCasamento(
+              titulo: _titulo.text,
+              tipoEvento: _tipo,
+              nomePessoa1: _pessoas.text,
+              dataEvento: _data!,
+              horarioEvento: horario,
+              localEvento: _local.text,
+            );
+      if (mounted) Navigator.pop(context, evento);
     } catch (erro) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Não foi possível criar: $erro')),
+          SnackBar(content: Text('Não foi possível salvar: $erro')),
         );
       }
     } finally {
@@ -953,8 +1210,11 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
 
   @override
   Widget build(BuildContext context) {
+    final dataTexto = _data == null
+        ? 'Definir data do evento'
+        : '${_data!.day.toString().padLeft(2, '0')}/${_data!.month.toString().padLeft(2, '0')}/${_data!.year}';
     return AlertDialog(
-      title: const Text('Novo casamento'),
+      title: Text(_editando ? 'Editar evento' : 'Novo evento'),
       content: SingleChildScrollView(
         child: SizedBox(
           width: 420,
@@ -963,6 +1223,27 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                DropdownButtonFormField<TipoEvento>(
+                  initialValue: _tipo,
+                  decoration: const InputDecoration(
+                    labelText: 'Tipo de evento',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: TipoEvento.values
+                      .map(
+                        (tipo) => DropdownMenuItem(
+                          value: tipo,
+                          child: Text(tipo.rotulo),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: _salvando
+                      ? null
+                      : (valor) {
+                          if (valor != null) setState(() => _tipo = valor);
+                        },
+                ),
+                const SizedBox(height: 12),
                 TextFormField(
                   controller: _titulo,
                   decoration: const InputDecoration(
@@ -975,18 +1256,10 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
-                  controller: _pessoa1,
-                  decoration: const InputDecoration(
-                    labelText: 'Nome da primeira pessoa (opcional)',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _pessoa2,
-                  decoration: const InputDecoration(
-                    labelText: 'Nome da segunda pessoa (opcional)',
-                    border: OutlineInputBorder(),
+                  controller: _pessoas,
+                  decoration: InputDecoration(
+                    labelText: '${_tipo.rotuloPessoa} (opcional)',
+                    border: const OutlineInputBorder(),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -1001,12 +1274,16 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
                 TextButton.icon(
                   onPressed: _selecionarData,
                   icon: const Icon(Icons.calendar_today_outlined),
-                  label: Text(
-                    _data == null
-                        ? 'Definir data do evento'
-                        : '${_data!.day.toString().padLeft(2, '0')}/${_data!.month.toString().padLeft(2, '0')}/${_data!.year}',
-                  ),
+                  label: Text(dataTexto),
                 ),
+                if (_validouData && _data == null)
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'A data é obrigatória.',
+                      style: TextStyle(color: Colors.red),
+                    ),
+                  ),
                 TextButton.icon(
                   onPressed: _selecionarHora,
                   icon: const Icon(Icons.schedule_outlined),
@@ -1016,6 +1293,14 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
                         : 'Horário: ${_hora!.format(context)}',
                   ),
                 ),
+                if (_validouHora && _hora == null)
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'O horário é obrigatório.',
+                      style: TextStyle(color: Colors.red),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -1028,7 +1313,7 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
         ),
         ElevatedButton(
           onPressed: _salvando ? null : _salvar,
-          child: Text(_salvando ? 'Criando...' : 'Criar'),
+          child: Text(_salvando ? 'Salvando...' : _editando ? 'Salvar' : 'Criar'),
         ),
       ],
     );

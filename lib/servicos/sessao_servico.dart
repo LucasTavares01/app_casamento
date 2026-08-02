@@ -9,6 +9,18 @@ import '../banco/banco_local.dart';
 import 'casamento_atual_servico.dart';
 import 'realtime_servico.dart';
 
+enum SituacaoContaCerimonialista {
+  novaConta,
+  contaExistenteSemPerfilCerimonialista,
+  confirmacaoEmailPendente,
+}
+
+class ResultadoContaCerimonialista {
+  final SituacaoContaCerimonialista situacao;
+
+  const ResultadoContaCerimonialista(this.situacao);
+}
+
 /// Autenticação da conta pelo Supabase Auth.
 ///
 /// O antigo acesso compartilhado por nomes e senhas locais foi substituído
@@ -23,8 +35,12 @@ class SessaoServico {
       'login_google_pendente_em';
   static const String _chaveVinculoGooglePendente =
       'vinculo_google_convite_pendente_em';
+  static const String _chavePerfilCerimonialistaGooglePendente =
+      'perfil_cerimonialista_google_pendente_em';
   static const Duration _validadeLoginGooglePendente = Duration(minutes: 15);
   static const Duration _validadeVinculoGooglePendente = Duration(minutes: 15);
+  static const Duration _validadePerfilCerimonialistaGooglePendente =
+      Duration(minutes: 15);
 
   final BancoLocal _banco = bancoLocal;
   final SupabaseClient _supabase = Supabase.instance.client;
@@ -33,6 +49,7 @@ class SessaoServico {
 
   UsuarioAppLocalRegistro? _usuarioAtual;
   User? _usuarioAutenticado;
+  Future<void>? _sincronizacaoUsuarioEmAndamento;
 
   UsuarioAppLocalRegistro? get usuarioAtual => _usuarioAtual;
   User? get _usuarioDoAuth => _usuarioAutenticado ?? _supabase.auth.currentUser;
@@ -92,6 +109,25 @@ class SessaoServico {
   Future<void> inicializar() => sincronizarUsuarioAutenticado();
 
   Future<void> sincronizarUsuarioAutenticado() async {
+    final sincronizacaoAtual = _sincronizacaoUsuarioEmAndamento;
+    if (sincronizacaoAtual != null) {
+      await sincronizacaoAtual;
+      return;
+    }
+
+    final novaSincronizacao = _sincronizarUsuarioAutenticadoInterno();
+    _sincronizacaoUsuarioEmAndamento = novaSincronizacao;
+
+    try {
+      await novaSincronizacao;
+    } finally {
+      if (identical(_sincronizacaoUsuarioEmAndamento, novaSincronizacao)) {
+        _sincronizacaoUsuarioEmAndamento = null;
+      }
+    }
+  }
+
+  Future<void> _sincronizarUsuarioAutenticadoInterno() async {
     final usuarioLocalAuth = _supabase.auth.currentUser;
     if (usuarioLocalAuth == null) {
       _usuarioAtual = null;
@@ -136,9 +172,50 @@ class SessaoServico {
       );
     }
 
-    await CasamentoAtualServico.instance.garantirOrganizacaoDaCerimonialista();
+    final perfilCerimonialistaGooglePendente =
+        await possuiPerfilCerimonialistaGooglePendente();
+
+    if (!perfilCerimonialistaGooglePendente) {
+      await _garantirOrganizacaoComTentativas();
+    }
+
     await RealtimeServico.instance.inicializar();
     await limparLoginGooglePendente();
+  }
+
+  Future<void> _garantirOrganizacaoComTentativas() async {
+    Object? ultimoErro;
+    StackTrace? ultimaPilha;
+
+    for (var tentativa = 1; tentativa <= 5; tentativa++) {
+      try {
+        await CasamentoAtualServico.instance
+            .garantirOrganizacaoDaCerimonialista();
+        return;
+      } catch (erro, stackTrace) {
+        ultimoErro = erro;
+        ultimaPilha = stackTrace;
+
+        final sessaoAindaAtiva =
+            _supabase.auth.currentSession != null &&
+            _supabase.auth.currentUser != null;
+        if (!sessaoAindaAtiva || tentativa == 5) {
+          Error.throwWithStackTrace(erro, stackTrace);
+        }
+
+        debugPrint(
+          'Conta ainda não ficou pronta após o login '
+          '(tentativa $tentativa de 5): $erro',
+        );
+        await Future<void>.delayed(
+          Duration(milliseconds: 600 * tentativa),
+        );
+      }
+    }
+
+    if (ultimoErro != null && ultimaPilha != null) {
+      Error.throwWithStackTrace(ultimoErro, ultimaPilha);
+    }
   }
 
   Future<void> entrarComEmail({
@@ -153,21 +230,123 @@ class SessaoServico {
     await sincronizarUsuarioAutenticado();
   }
 
-  Future<void> criarConta({
+  Future<ResultadoContaCerimonialista> prepararContaCerimonialista({
     required String nome,
     required String email,
     required String senha,
   }) async {
     await prepararNovaAutenticacao();
-    final resposta = await _supabase.auth.signUp(
-      email: _normalizarEmail(email),
-      password: senha,
-      data: {'nome': nome.trim(), 'criar_organizacao': true},
+
+    final emailNormalizado = _normalizarEmail(email);
+    final nomeNormalizado = nome.trim();
+
+    try {
+      final contaJaExiste = await emailCadastrado(emailNormalizado);
+      if (contaJaExiste) {
+        return const ResultadoContaCerimonialista(
+          SituacaoContaCerimonialista.contaExistenteSemPerfilCerimonialista,
+        );
+      }
+
+      final resposta = await _supabase.auth.signUp(
+        email: emailNormalizado,
+        password: senha,
+        emailRedirectTo: kIsWeb ? null : 'br.com.appcasamento://login-callback',
+        data: {
+          'nome': nomeNormalizado,
+          'criar_organizacao': true,
+          'cadastro_concluido': true,
+        },
+      );
+
+      if (resposta.session == null) {
+        return const ResultadoContaCerimonialista(
+          SituacaoContaCerimonialista.confirmacaoEmailPendente,
+        );
+      }
+
+      await habilitarPerfilCerimonialista(nome: nomeNormalizado);
+      return const ResultadoContaCerimonialista(
+        SituacaoContaCerimonialista.novaConta,
+      );
+    } on AuthException catch (erro) {
+      if (_erroIndicaContaExistente(erro)) {
+        return const ResultadoContaCerimonialista(
+          SituacaoContaCerimonialista.contaExistenteSemPerfilCerimonialista,
+        );
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> habilitarPerfilCerimonialista({
+    required String nome,
+  }) async {
+    final usuario = _supabase.auth.currentUser;
+    if (usuario == null || _supabase.auth.currentSession == null) {
+      throw const AuthException(
+        'Entre na conta existente antes de habilitar o perfil de cerimonialista.',
+      );
+    }
+
+    final nomeNormalizado = nome.trim().isEmpty
+        ? _nomeDoUsuario(usuario)
+        : nome.trim();
+
+    await _supabase.auth.updateUser(
+      UserAttributes(
+        data: {
+          'nome': nomeNormalizado,
+          'criar_organizacao': true,
+          'cadastro_concluido': true,
+          'precisa_definir_senha': false,
+        },
+      ),
     );
 
-    if (resposta.session != null) {
-      await sincronizarUsuarioAutenticado();
+    await _supabase.rpc(
+      'habilitar_perfil_cerimonialista_v1',
+      params: {'p_nome': nomeNormalizado},
+    );
+
+    await sincronizarUsuarioAutenticado();
+  }
+
+  Future<void> atualizarPerfil({required String nome}) async {
+    final nomeNormalizado = nome.trim();
+    if (nomeNormalizado.length < 2) {
+      throw const AuthException('Informe um nome válido.');
     }
+
+    if (_supabase.auth.currentSession == null ||
+        _supabase.auth.currentUser == null) {
+      throw const AuthException('Entre na conta para editar o perfil.');
+    }
+
+    await _supabase.rpc(
+      'atualizar_perfil_usuario_v1',
+      params: {'p_nome': nomeNormalizado},
+    );
+    await sincronizarUsuarioAutenticado();
+  }
+
+  Future<bool> emailCadastrado(String email) async {
+    final resposta = await _supabase.rpc(
+      'email_cadastrado_v1',
+      params: {'p_email': _normalizarEmail(email)},
+    );
+    return resposta == true;
+  }
+
+  bool _erroIndicaContaExistente(AuthException erro) {
+    final codigo = erro.code?.toLowerCase() ?? '';
+    final mensagem = erro.message.toLowerCase();
+
+    return codigo == 'user_already_exists' ||
+        codigo == 'email_exists' ||
+        mensagem.contains('already registered') ||
+        mensagem.contains('already exists') ||
+        mensagem.contains('user already registered');
   }
 
   /// Abre o navegador para que a pessoa escolha uma conta Google.
@@ -175,9 +354,14 @@ class SessaoServico {
   /// A sessão anterior do Supabase é removida somente deste aparelho antes de
   /// abrir o navegador. Isso não desconecta as contas Google do celular, então
   /// elas continuam disponíveis no seletor de contas.
-  Future<void> entrarComGoogle() async {
+  Future<void> entrarComGoogle({
+    bool solicitarPerfilCerimonialista = false,
+  }) async {
     await prepararNovaAutenticacao();
     await _marcarLoginGooglePendente();
+    if (solicitarPerfilCerimonialista) {
+      await _marcarPerfilCerimonialistaGooglePendente();
+    }
 
     try {
       await _supabase.auth.signInWithOAuth(
@@ -190,10 +374,27 @@ class SessaoServico {
       );
     } catch (_) {
       await limparLoginGooglePendente();
+      await limparPerfilCerimonialistaGooglePendente();
       rethrow;
     }
   }
 
+  Future<bool> possuiPerfilCerimonialistaGooglePendente() async {
+    return _possuiMarcadorPendente(
+      chave: _chavePerfilCerimonialistaGooglePendente,
+      validade: _validadePerfilCerimonialistaGooglePendente,
+    );
+  }
+
+  Future<void> limparPerfilCerimonialistaGooglePendente() async {
+    await (_banco.delete(_banco.configuracoesLocais)
+          ..where(
+            (tabela) => tabela.chave.equals(
+              _chavePerfilCerimonialistaGooglePendente,
+            ),
+          ))
+        .go();
+  }
 
   /// Vincula uma conta Google à conta criada pelo convite.
   ///
@@ -316,6 +517,7 @@ class SessaoServico {
   Future<void> prepararNovaAutenticacao() async {
     await limparLoginGooglePendente();
     await limparVinculoGooglePendente();
+    await limparPerfilCerimonialistaGooglePendente();
     await RealtimeServico.instance.encerrar();
     _usuarioAtual = null;
     _usuarioAutenticado = null;
@@ -343,6 +545,7 @@ class SessaoServico {
   Future<void> encerrarSessao() async {
     await limparLoginGooglePendente();
     await limparVinculoGooglePendente();
+    await limparPerfilCerimonialistaGooglePendente();
     await RealtimeServico.instance.encerrar();
     _usuarioAtual = null;
     _usuarioAutenticado = null;
@@ -356,6 +559,12 @@ class SessaoServico {
 
   Future<void> _marcarVinculoGooglePendente() {
     return _salvarMarcadorPendente(_chaveVinculoGooglePendente);
+  }
+
+  Future<void> _marcarPerfilCerimonialistaGooglePendente() {
+    return _salvarMarcadorPendente(
+      _chavePerfilCerimonialistaGooglePendente,
+    );
   }
 
   Future<void> _salvarMarcadorPendente(String chave) async {

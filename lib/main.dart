@@ -54,10 +54,10 @@ class _MeuAppCasamentoState extends State<MeuAppCasamento>
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Check-in Casamento',
+      title: 'ConfirmaAi',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Color(0xFF4A2BC7)),
         useMaterial3: true,
       ),
       home: const TelaPortaDeEntrada(),

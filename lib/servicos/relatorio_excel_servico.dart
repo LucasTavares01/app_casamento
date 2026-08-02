@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../banco/banco_instancia.dart';
 import '../banco/banco_local.dart';
+import '../modelos/tipos_evento.dart';
 import 'casamento_atual_servico.dart';
 
 class ResultadoRelatorioExcel {
@@ -272,7 +273,7 @@ class RelatorioExcelServico {
 
     final agora = DateTime.now();
     final nomeArquivo =
-        'relatorio_casamento_${_formatarParaNomeArquivo(agora)}.xlsx';
+        'relatorio_evento_${_formatarParaNomeArquivo(agora)}.xlsx';
 
     final bytesArquivo = Uint8List.fromList(bytes);
 
@@ -416,6 +417,8 @@ class RelatorioExcelServico {
       'casamento': {
         'titulo': casamento.titulo,
         'descricao': casamento.descricao,
+        'tipo': casamento.tipoEvento.rotulo,
+        'identificacao': casamento.descricaoPessoas,
         'data': casamento.dataEvento?.toIso8601String(),
         'horario': casamento.horarioEvento,
         'local': casamento.localEvento,
@@ -565,7 +568,9 @@ class RelatorioExcelServico {
     planilha.setRowHeight(1, 20);
 
     final dadosEvento = <String>[
-      casamento.descricao,
+      casamento.titulo,
+      casamento.tipoEvento.rotulo,
+      if (casamento.descricaoPessoas.isNotEmpty) casamento.descricaoPessoas,
       if (casamento.dataEvento != null)
         _formatarSomenteData(casamento.dataEvento!),
       if (casamento.horarioEvento?.trim().isNotEmpty == true)
