@@ -8,7 +8,7 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_FILE_BYTES = 30 * 1024 * 1024;
 const MAX_EXTRACTED_TEXT_CHARS = 1_500_000;
 const GEMINI_TIMEOUT_MS = 180_000;
 const GEMINI_MODEL = "gemini-3.6-flash";
@@ -170,7 +170,7 @@ Deno.serve(async (request) => {
     const approximateBytes = Math.floor((arquivoBase64.length * 3) / 4);
     if (approximateBytes > MAX_FILE_BYTES) {
       return jsonResponse(
-        { mensagem: "O arquivo ultrapassa o limite de 10 MB." },
+        { mensagem: "O arquivo ultrapassa o limite de 30 MB." },
         413,
       );
     }

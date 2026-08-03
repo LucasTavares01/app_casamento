@@ -44,6 +44,22 @@ class ResultadoPreviaImportacao {
     };
   }
 
+  ResultadoPreviaImportacao copyWith({
+    String? arquivoNome,
+    String? resumo,
+    List<MesaPreviaImportacao>? mesas,
+    List<ConvidadoPreviaImportacao>? convidadosSemMesa,
+    List<AvisoPreviaImportacao>? avisos,
+  }) {
+    return ResultadoPreviaImportacao(
+      arquivoNome: arquivoNome ?? this.arquivoNome,
+      resumo: resumo ?? this.resumo,
+      mesas: mesas ?? this.mesas,
+      convidadosSemMesa: convidadosSemMesa ?? this.convidadosSemMesa,
+      avisos: avisos ?? this.avisos,
+    );
+  }
+
   int get quantidadeMesas => mesas.length;
 
   int get quantidadeConvidados {
@@ -78,6 +94,7 @@ class MesaPreviaImportacao {
   final String detalhe;
   final int? capacidade;
   final List<ConvidadoPreviaImportacao> convidados;
+  final bool numeroGeradoAutomaticamente;
 
   const MesaPreviaImportacao({
     required this.numero,
@@ -85,6 +102,7 @@ class MesaPreviaImportacao {
     required this.detalhe,
     required this.capacidade,
     required this.convidados,
+    this.numeroGeradoAutomaticamente = false,
   });
 
   factory MesaPreviaImportacao.fromJson(Map<String, dynamic> json) {
@@ -96,6 +114,8 @@ class MesaPreviaImportacao {
       convidados: _listaMapas(
         json['convidados'],
       ).map(ConvidadoPreviaImportacao.fromJson).toList(growable: false),
+      numeroGeradoAutomaticamente:
+          json['numero_gerado_automaticamente'] == true,
     );
   }
 
@@ -105,10 +125,30 @@ class MesaPreviaImportacao {
       'nome_exibicao': nomeExibicao,
       'detalhe': detalhe,
       'capacidade': capacidade,
+      'numero_gerado_automaticamente': numeroGeradoAutomaticamente,
       'convidados': convidados
           .map((convidado) => convidado.toJson())
           .toList(growable: false),
     };
+  }
+
+  MesaPreviaImportacao copyWith({
+    int? numero,
+    String? nomeExibicao,
+    String? detalhe,
+    int? capacidade,
+    List<ConvidadoPreviaImportacao>? convidados,
+    bool? numeroGeradoAutomaticamente,
+  }) {
+    return MesaPreviaImportacao(
+      numero: numero ?? this.numero,
+      nomeExibicao: nomeExibicao ?? this.nomeExibicao,
+      detalhe: detalhe ?? this.detalhe,
+      capacidade: capacidade ?? this.capacidade,
+      convidados: convidados ?? this.convidados,
+      numeroGeradoAutomaticamente:
+          numeroGeradoAutomaticamente ?? this.numeroGeradoAutomaticamente,
+    );
   }
 
   int get quantidadeConvidados => convidados.length;
@@ -168,6 +208,20 @@ class ConvidadoPreviaImportacao {
       'categoria': categoria.valorJson,
       'confianca': confianca,
     };
+  }
+
+  ConvidadoPreviaImportacao copyWith({
+    String? nome,
+    String? descricao,
+    CategoriaConvidado? categoria,
+    double? confianca,
+  }) {
+    return ConvidadoPreviaImportacao(
+      nome: nome ?? this.nome,
+      descricao: descricao ?? this.descricao,
+      categoria: categoria ?? this.categoria,
+      confianca: confianca ?? this.confianca,
+    );
   }
 
   String get nomeComDescricao {

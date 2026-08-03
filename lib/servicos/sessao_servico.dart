@@ -72,6 +72,20 @@ class SessaoServico {
     return valor == false || valor?.toString().toLowerCase() == 'false';
   }
 
+  bool get deveAbrirComoFuncionario {
+    final valor = _usuarioDoAuth?.userMetadata?['abrir_como_funcionario'];
+    return valor == true || valor?.toString().toLowerCase() == 'true';
+  }
+
+  Future<void> consumirAberturaComoFuncionario() async {
+    if (!deveAbrirComoFuncionario || _usuarioDoAuth == null) return;
+
+    await _supabase.auth.updateUser(
+      UserAttributes(data: const {'abrir_como_funcionario': false}),
+    );
+    _usuarioAutenticado = _supabase.auth.currentUser;
+  }
+
   bool get precisaConcluirPrimeiroAcessoFuncionario =>
       ehFuncionarioConvidado && precisaDefinirSenha;
 
@@ -330,6 +344,49 @@ class SessaoServico {
     await sincronizarUsuarioAutenticado();
   }
 
+  /// Exclui definitivamente a conta autenticada.
+  ///
+  /// A exclusão nunca entra na fila offline: ela só é considerada concluída
+  /// depois que o RPC transacional do Supabase termina com sucesso. Só então
+  /// os dados locais são removidos e a sessão é encerrada neste aparelho.
+  Future<void> excluirConta({required String emailConfirmacao}) async {
+    final usuario = _supabase.auth.currentUser;
+    final sessao = _supabase.auth.currentSession;
+    final email = _normalizarEmail(usuario?.email ?? '');
+
+    if (usuario == null || sessao == null || email.isEmpty) {
+      throw const AuthException('Entre novamente para excluir sua conta.');
+    }
+
+    if (_normalizarEmail(emailConfirmacao) != email) {
+      throw const AuthException('O e-mail de confirmação não confere.');
+    }
+
+    await _supabase.rpc(
+      'excluir_conta_atual_v1',
+      params: {'p_email_confirmacao': emailConfirmacao.trim()},
+    );
+
+    // Depois do retorno do servidor, não há mais uma conta válida para
+    // sincronizar. A limpeza e o logout precisam acontecer mesmo se algum
+    // detalhe local falhar.
+    try {
+      await _limparTodosOsDadosLocais();
+    } finally {
+      await RealtimeServico.instance.encerrar();
+      _usuarioAtual = null;
+      _usuarioAutenticado = null;
+      _sincronizacaoUsuarioEmAndamento = null;
+      try {
+        await _supabase.auth.signOut(scope: SignOutScope.local);
+      } catch (erro) {
+        // A identidade já foi apagada no servidor. O estado local do Auth
+        // ainda precisa ser descartado mesmo quando o SDK rejeita o logout.
+        debugPrint('A conta foi excluída; logout local já foi forçado: $erro');
+      }
+    }
+  }
+
   Future<bool> emailCadastrado(String email) async {
     final resposta = await _supabase.rpc(
       'email_cadastrado_v1',
@@ -528,6 +585,18 @@ class SessaoServico {
     }
   }
 
+  /// Descarta o estado local da conta anterior sem derrubar a sessão que o
+  /// Supabase acabou de abrir para a conta do convite.
+  Future<void> limparDadosLocaisAoTrocarUsuario() async {
+    await limparLoginGooglePendente();
+    await limparVinculoGooglePendente();
+    await limparPerfilCerimonialistaGooglePendente();
+    await RealtimeServico.instance.encerrar();
+    _usuarioAtual = null;
+    _usuarioAutenticado = null;
+    await CasamentoAtualServico.instance.limparPersistido();
+  }
+
   /// Mantido para os serviços de sincronização. A renovação do token é feita
   /// automaticamente pelo Supabase; basta confirmar que ainda há uma sessão.
   Future<bool?> renovarSessao() async => _supabase.auth.currentSession != null;
@@ -539,6 +608,18 @@ class SessaoServico {
       throw const SessaoInvalidaException(
         'Sua sessão expirou. Entre novamente para sincronizar.',
       );
+    }
+
+    try {
+      await _supabase.auth.getUser();
+    } on AuthException catch (erro) {
+      if (_erroIndicaContaRemovida(erro)) {
+        await _tratarContaRemovidaNoServidor();
+        throw const SessaoInvalidaException(
+          'Esta conta foi excluída. Entre novamente para continuar.',
+        );
+      }
+      rethrow;
     }
   }
 
@@ -580,6 +661,73 @@ class SessaoServico {
         );
   }
 
+  /// Limpa os dados da conta que ficaram no SQLite, preservando somente o ID
+  /// deste aparelho para que ele continue sendo reconhecido após um novo
+  /// cadastro.
+  Future<void> _limparTodosOsDadosLocais() async {
+    final dispositivo = await (_banco.select(
+      _banco.configuracoesLocais,
+    )..where((tabela) => tabela.chave.equals('dispositivo_id'))).getSingleOrNull();
+
+    await _banco.transaction(() async {
+      await _banco.delete(_banco.mensagensChatLocais).go();
+      await _banco.delete(_banco.staffsLocais).go();
+      await _banco.delete(_banco.eventosCheckinLocais).go();
+      await _banco.delete(_banco.convidadosLocais).go();
+      await _banco.delete(_banco.mesasLocais).go();
+      await _banco.delete(_banco.operacoesPendentesLocais).go();
+      await _banco.delete(_banco.sincronizacoesLocais).go();
+      await _banco.delete(_banco.usuariosAppLocais).go();
+      await _banco.delete(_banco.configuracoesLocais).go();
+
+      if (dispositivo != null) {
+        await _banco
+            .into(_banco.configuracoesLocais)
+            .insert(ConfiguracoesLocaisCompanion.insert(
+              chave: dispositivo.chave,
+              valor: dispositivo.valor,
+              atualizadoEm: dispositivo.atualizadoEm,
+            ));
+      }
+    });
+
+    await CasamentoAtualServico.instance.limparPersistido();
+  }
+
+  Future<void> _tratarContaRemovidaNoServidor() async {
+    try {
+      await _limparTodosOsDadosLocais();
+    } finally {
+      await RealtimeServico.instance.encerrar();
+      _usuarioAtual = null;
+      _usuarioAutenticado = null;
+      try {
+        await _supabase.auth.signOut(scope: SignOutScope.local);
+      } catch (_) {
+        // O token pode já ter sido invalidado pelo servidor.
+      }
+      if (!_controladorSessaoRevogada.isClosed) {
+        _controladorSessaoRevogada.add(
+          'Sua conta foi excluída e o acesso foi encerrado neste aparelho.',
+        );
+      }
+    }
+  }
+
+  bool _erroIndicaContaRemovida(AuthException erro) {
+    final codigo = erro.code?.toLowerCase() ?? '';
+    final mensagem = erro.message.toLowerCase();
+    const codigos = {
+      'user_not_found',
+      'user_banned',
+    };
+
+    return codigos.contains(codigo) ||
+        mensagem.contains('user not found') ||
+        mensagem.contains('user does not exist') ||
+        mensagem.contains('user from sub claim');
+  }
+
   Future<bool> _possuiMarcadorPendente({
     required String chave,
     required Duration validade,
@@ -612,6 +760,16 @@ class SessaoServico {
         usuario: usuarioAtualizado ?? usuarioLocal,
         validadoOnline: true,
       );
+    } on AuthException catch (erro) {
+      if (_erroIndicaContaRemovida(erro)) {
+        await _tratarContaRemovidaNoServidor();
+        return (usuario: null, validadoOnline: true);
+      }
+
+      // Sem internet, o Supabase mantém a sessão persistida no aparelho. A
+      // tela inicial poderá abrir a cópia offline do último casamento.
+      debugPrint('Usando usuário da sessão local: $erro');
+      return (usuario: usuarioLocal, validadoOnline: false);
     } catch (erro) {
       // Sem internet, o Supabase mantém a sessão persistida no aparelho. A
       // tela inicial poderá abrir a cópia offline do último casamento.

@@ -41,10 +41,18 @@ Deno.serve(async (request) => {
     const funcionarioId = text(body?.funcionario_id);
     const nome = text(body?.nome);
     const email = normalizeEmail(body?.email);
+    const telefoneInformado = normalizePhone(body?.telefone);
 
     if (!casamentoId || (!funcionarioId && (!nome || !isValidEmail(email)))) {
       return json(
         { mensagem: "Funcionário, e-mail e evento são obrigatórios." },
+        400,
+      );
+    }
+
+    if (text(body?.telefone) && !telefoneInformado) {
+      return json(
+        { mensagem: "Número de WhatsApp inválido. Use DDD e número." },
         400,
       );
     }
@@ -106,13 +114,14 @@ Deno.serve(async (request) => {
     let usuarioId: string;
     let emailDestino: string;
     let nomeDestino: string;
+    let telefoneDestino: string | null = telefoneInformado;
     let conviteEnviado = false;
     let contaJaExistia = false;
 
     if (funcionarioId) {
       const { data: funcionario, error: erroFuncionario } = await admin
         .from("funcionarios_organizacao")
-        .select("usuario_id, nome, email")
+        .select("usuario_id, nome, email, telefone")
         .eq("id", funcionarioId)
         .eq("organizacao_id", casamento.organizacao_id)
         .eq("ativo", true)
@@ -128,6 +137,7 @@ Deno.serve(async (request) => {
       usuarioId = funcionario.usuario_id;
       emailDestino = normalizeEmail(funcionario.email);
       nomeDestino = text(funcionario.nome);
+      telefoneDestino = normalizePhone(funcionario.telefone);
       contaJaExistia = true;
 
       if (!isValidEmail(emailDestino)) {
@@ -162,6 +172,7 @@ Deno.serve(async (request) => {
               evento_horario: text(casamento.hora_evento),
               evento_local: text(casamento.local_evento),
               casamento_id: casamentoId,
+              abrir_como_funcionario: true,
               criar_organizacao: false,
               precisa_definir_senha: true,
             },
@@ -231,6 +242,7 @@ Deno.serve(async (request) => {
             usuario_id: usuarioId,
             nome: nomeDestino,
             email: emailDestino,
+            telefone: telefoneDestino,
             ativo: true,
             updated_at: new Date().toISOString(),
           },
@@ -301,6 +313,14 @@ Deno.serve(async (request) => {
       ? { enviada: true, mensagem: null }
       : await enviarLinkDeAcesso(admin, emailDestino);
 
+    const linkWhatsApp = telefoneDestino
+      ? await gerarLinkDeAcessoWhatsApp(
+          admin,
+          emailDestino,
+          conviteEnviado,
+        )
+      : null;
+
     return json({
       usuario_id: usuarioId,
       nome: nomeDestino,
@@ -308,6 +328,8 @@ Deno.serve(async (request) => {
       convite_enviado: conviteEnviado,
       notificacao_enviada: notificacao.enviada,
       mensagem_notificacao: notificacao.mensagem,
+      telefone_whatsapp: telefoneDestino,
+      link_whatsapp: linkWhatsApp,
       conta_ja_existia: contaJaExistia,
       conta_mista: contaJaCerimonialista,
     });
@@ -433,6 +455,7 @@ async function atualizarMetadadosDoConvite(
         evento_horario: eventoHorario,
         evento_local: eventoLocal,
         casamento_id: casamentoId,
+        abrir_como_funcionario: true,
       },
     });
 
@@ -466,6 +489,25 @@ async function enviarLinkDeAcesso(
       "O acesso foi liberado, mas o e-mail não pôde ser enviado.",
     ),
   };
+}
+
+async function gerarLinkDeAcessoWhatsApp(
+  admin: AdminClient,
+  email: string,
+  ehNovoConvite: boolean,
+): Promise<string | null> {
+  const { data, error } = await admin.auth.admin.generateLink({
+    type: ehNovoConvite ? "invite" : "magiclink",
+    email,
+    options: { redirectTo: REDIRECT_LOGIN },
+  });
+
+  if (error || !data?.properties?.action_link) {
+    console.error("Não foi possível gerar o link do WhatsApp", error);
+    return null;
+  }
+
+  return data.properties.action_link;
 }
 
 function isExistingUserError(error: unknown): boolean {
@@ -525,6 +567,18 @@ function normalizeEmail(value: unknown): string {
 
 function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function normalizePhone(value: unknown): string | null {
+  const digits = text(value).replace(/\D/g, "");
+  if (!digits) return null;
+
+  const withCountryCode = digits.startsWith("55") ? digits : `55${digits}`;
+  if (withCountryCode.length !== 12 && withCountryCode.length !== 13) {
+    return null;
+  }
+
+  return withCountryCode;
 }
 
 function getServiceRoleKey(): string | null {

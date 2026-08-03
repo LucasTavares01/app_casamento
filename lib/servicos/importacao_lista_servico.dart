@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../modelos/modelos_importacao.dart';
@@ -14,7 +16,7 @@ class ImportacaoListaServico {
 
   static final ImportacaoListaServico instance = ImportacaoListaServico._();
 
-  static const int _tamanhoMaximoBytes = 10 * 1024 * 1024;
+  static const int _tamanhoMaximoBytes = 30 * 1024 * 1024;
   static const List<String> _extensoesPermitidas = [
     'pdf',
     'xlsx',
@@ -28,6 +30,7 @@ class ImportacaoListaServico {
   ];
 
   final SupabaseClient _supabase = Supabase.instance.client;
+  final ImagePicker _imagePicker = ImagePicker();
 
   Future<ResultadoPreviaImportacao?> selecionarEAnalisarArquivo() async {
     final selecao = await FilePicker.pickFiles(
@@ -59,26 +62,75 @@ class ImportacaoListaServico {
 
     if (bytes.length > _tamanhoMaximoBytes) {
       throw const ImportacaoListaException(
-        'O arquivo ultrapassa 10 MB. Reduza o tamanho e tente novamente.',
+        'O arquivo ultrapassa 30 MB. Reduza o tamanho e tente novamente.',
+      );
+    }
+
+    return _analisarBytes(
+      arquivoNome: arquivo.name,
+      mimeType: _obterMimeType(extensao),
+      bytes: bytes,
+    );
+  }
+
+  Future<ResultadoPreviaImportacao?> tirarFotoEAnalisar() async {
+    late final XFile? foto;
+    try {
+      foto = await _imagePicker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 100,
+      );
+    } on PlatformException catch (erro) {
+      if (erro.code == 'camera_access_denied') {
+        throw const ImportacaoListaException(
+          'O acesso à câmera foi negado. Permita a câmera nas configurações do aparelho e tente novamente.',
+        );
+      }
+      throw const ImportacaoListaException(
+        'Não foi possível abrir a câmera. Tente novamente.',
+      );
+    }
+
+    if (foto == null) {
+      return null;
+    }
+
+    final bytes = await foto.readAsBytes();
+    if (bytes.isEmpty) {
+      throw const ImportacaoListaException('A foto selecionada está vazia.');
+    }
+
+    return _analisarBytes(
+      arquivoNome: foto.name.isEmpty ? 'foto_lista.jpg' : foto.name,
+      mimeType: 'image/jpeg',
+      bytes: bytes,
+    );
+  }
+
+  Future<ResultadoPreviaImportacao> _analisarBytes({
+    required String arquivoNome,
+    required String mimeType,
+    required Uint8List bytes,
+  }) async {
+    if (bytes.length > _tamanhoMaximoBytes) {
+      throw const ImportacaoListaException(
+        'O arquivo ultrapassa 30 MB. Reduza o tamanho e tente novamente.',
       );
     }
 
     final usuario = SessaoServico.instance.usuarioAtual;
-
     if (usuario == null) {
       throw const ImportacaoListaException(
         'Sua sessão não está ativa. Entre novamente no aplicativo.',
       );
     }
 
-    final mimeType = _obterMimeType(extensao);
-
     try {
       final resposta = await _supabase.functions
           .invoke(
             'analisar-lista-convidados',
             body: {
-              'arquivo_nome': arquivo.name,
+              'arquivo_nome': arquivoNome,
               'mime_type': mimeType,
               'arquivo_base64': base64Encode(bytes),
               'casamento_id': CasamentoAtualServico.instance.casamentoId,
@@ -102,8 +154,10 @@ class ImportacaoListaServico {
         );
       }
 
-      return ResultadoPreviaImportacao.fromJson(
-        Map<String, dynamic>.from(resultadoBruto),
+      return _normalizarMesasSemNumero(
+        ResultadoPreviaImportacao.fromJson(
+          Map<String, dynamic>.from(resultadoBruto),
+        ),
       );
     } on ImportacaoListaException {
       rethrow;
@@ -111,25 +165,68 @@ class ImportacaoListaServico {
       final detalhes = _converterMapa(erro.details);
       throw ImportacaoListaException(
         _obterMensagemErro(detalhes) ??
-            'Não foi possível acessar o analisador de listas. '
-                'Confirme se a Edge Function foi publicada.',
+            'Não foi possível analisar a lista agora. Tente novamente.',
       );
     } on SocketException {
       throw const ImportacaoListaException(
         'Sem conexão com a internet. A análise por IA precisa estar online.',
       );
+    } on TimeoutException {
+      throw const ImportacaoListaException(
+        'A análise demorou mais que o esperado. Tente novamente em instantes.',
+      );
     } on FormatException {
       throw const ImportacaoListaException(
-        'O servidor retornou uma resposta inválida.',
+        'Não foi possível interpretar o resultado da análise. Tente novamente.',
       );
-    } catch (erro) {
-      final texto = erro.toString().trim();
-      throw ImportacaoListaException(
-        texto.isEmpty
-            ? 'Não foi possível analisar o arquivo.'
-            : 'Não foi possível analisar o arquivo: $texto',
+    } catch (_) {
+      throw const ImportacaoListaException(
+        'Não foi possível analisar a lista agora. Tente novamente.',
       );
     }
+  }
+
+  ResultadoPreviaImportacao _normalizarMesasSemNumero(
+    ResultadoPreviaImportacao resultado,
+  ) {
+    final numerosUsados = resultado.mesas
+        .map((mesa) => mesa.numero)
+        .whereType<int>()
+        .where((numero) => numero >= 0)
+        .toSet();
+    var proximoNumero = 1;
+    final avisos = resultado.avisos
+        .where((aviso) => aviso.tipo != TipoAvisoImportacao.mesaSemNumero)
+        .toList();
+    final mesas = <MesaPreviaImportacao>[];
+
+    for (final mesa in resultado.mesas) {
+      final numeroAtual = mesa.numero;
+      if (numeroAtual != null && numeroAtual >= 0) {
+        mesas.add(mesa);
+        continue;
+      }
+
+      while (numerosUsados.contains(proximoNumero)) {
+        proximoNumero++;
+      }
+      final numeroGerado = proximoNumero++;
+      numerosUsados.add(numeroGerado);
+      mesas.add(
+        mesa.copyWith(numero: numeroGerado, numeroGeradoAutomaticamente: true),
+      );
+      avisos.add(
+        AvisoPreviaImportacao(
+          tipo: TipoAvisoImportacao.mesaSemNumero,
+          mensagem:
+              '${mesa.titulo} não tinha número. O número $numeroGerado foi atribuído automaticamente; revise antes de confirmar.',
+          mesaNumero: numeroGerado,
+          convidadoNome: null,
+        ),
+      );
+    }
+
+    return resultado.copyWith(mesas: mesas, avisos: avisos);
   }
 
   List<String> validarParaPublicacao(ResultadoPreviaImportacao resultado) {

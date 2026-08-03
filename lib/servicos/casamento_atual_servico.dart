@@ -108,6 +108,8 @@ class CasamentoAtualServico {
   final BancoLocal _banco = bancoLocal;
 
   static const String _chaveCasamentoAtual = 'casamento_atual_v1';
+  static const String _chaveCasamentosDisponiveis =
+      'casamentos_disponiveis_v1';
 
   CasamentoAtual? _casamento;
 
@@ -186,6 +188,16 @@ class CasamentoAtualServico {
       return const [];
     }
 
+    try {
+      return await _listarCasamentosOnline(usuarioId);
+    } catch (_) {
+      // A lista resumida de eventos precisa continuar disponível mesmo sem
+      // internet. Os dados completos do evento continuam no SQLite local.
+      return _restaurarCasamentosDisponiveis(usuarioId: usuarioId);
+    }
+  }
+
+  Future<List<CasamentoAtual>> _listarCasamentosOnline(String usuarioId) async {
     final casamentos = await _supabase
         .from('casamentos')
         .select(
@@ -205,19 +217,31 @@ class CasamentoAtualServico {
         .whereType<String>()
         .toSet();
 
+    final statusPorCasamento = <String, String?>{
+      for (final item in casamentos as List)
+        (item as Map)['id'].toString(): item['status']?.toString(),
+    };
+
     final vinculos = await _supabase
         .from('membros_casamento')
-        .select('casamento_id, papel')
-        .eq('usuario_id', usuarioId)
-        .eq('ativo', true);
+        .select('casamento_id, papel, ativo')
+        .eq('usuario_id', usuarioId);
 
-    final papeisPorCasamento = <String, PapelNoCasamento>{
-      for (final item in vinculos as List)
-        if ((item as Map)['casamento_id'] != null)
-          item['casamento_id'].toString(): item['papel'] == 'admin'
-              ? PapelNoCasamento.admin
-              : PapelNoCasamento.funcionario,
-    };
+    final papeisPorCasamento = <String, PapelNoCasamento>{};
+    for (final item in vinculos as List) {
+      final registro = item as Map;
+      final id = registro['casamento_id']?.toString();
+      if (id == null) continue;
+
+      final status = statusPorCasamento[id];
+      final acessoHistorico =
+          status == 'finalizado' || status == 'arquivado';
+      if (registro['ativo'] != true && !acessoHistorico) continue;
+
+      papeisPorCasamento[id] = registro['papel'] == 'admin'
+          ? PapelNoCasamento.admin
+          : PapelNoCasamento.funcionario;
+    }
 
     final resultado = <CasamentoAtual>[];
 
@@ -261,7 +285,110 @@ class CasamentoAtualServico {
       }
     }
 
+    try {
+      await _salvarCasamentosDisponiveis(
+        usuarioId: usuarioId,
+        casamentos: resultado,
+      );
+    } catch (_) {
+      // Uma falha na cópia local não deve esconder os dados recebidos online.
+    }
     return resultado;
+  }
+
+  Future<void> _salvarCasamentosDisponiveis({
+    required String usuarioId,
+    required List<CasamentoAtual> casamentos,
+  }) async {
+    final dados = {
+      'usuario_id': usuarioId,
+      'casamentos': casamentos
+          .map(
+            (casamento) => {
+              'id': casamento.id,
+              'organizacao_id': casamento.organizacaoId,
+              'titulo': casamento.titulo,
+              'nome_pessoa_1': casamento.nomePessoa1,
+              'nome_pessoa_2': casamento.nomePessoa2,
+              'tipo_evento': casamento.tipoEvento.valorBanco,
+              'rotulo_pessoas': casamento.rotuloPessoas,
+              'detalhes_evento': casamento.detalhesEvento,
+              'data_evento': casamento.dataEvento?.toIso8601String(),
+              'horario_evento': casamento.horarioEvento,
+              'local_evento': casamento.localEvento,
+              'status': casamento.status,
+              'papel': casamento.ehAdmin ? 'admin' : 'funcionario',
+            },
+          )
+          .toList(),
+    };
+
+    await _banco
+        .into(_banco.configuracoesLocais)
+        .insertOnConflictUpdate(
+          ConfiguracoesLocaisCompanion.insert(
+            chave: _chaveCasamentosDisponiveis,
+            valor: jsonEncode(dados),
+            atualizadoEm: DateTime.now().toUtc(),
+          ),
+        );
+  }
+
+  Future<List<CasamentoAtual>> _restaurarCasamentosDisponiveis({
+    required String usuarioId,
+  }) async {
+    final registro = await (_banco.select(_banco.configuracoesLocais)
+          ..where(
+            (tabela) => tabela.chave.equals(_chaveCasamentosDisponiveis),
+          ))
+        .getSingleOrNull();
+
+    if (registro == null) return const [];
+
+    try {
+      final dados = jsonDecode(registro.valor);
+      if (dados is! Map || dados['usuario_id']?.toString() != usuarioId) {
+        return const [];
+      }
+
+      final itens = dados['casamentos'];
+      if (itens is! List) return const [];
+
+      return itens
+          .whereType<Map>()
+          .map(
+            (item) => _casamentoAPartirDoRegistro(
+              Map<String, dynamic>.from(item),
+              item['papel']?.toString() == 'admin'
+                  ? PapelNoCasamento.admin
+                  : PapelNoCasamento.funcionario,
+            ),
+          )
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  CasamentoAtual _casamentoAPartirDoRegistro(
+    Map<String, dynamic> registro,
+    PapelNoCasamento papel,
+  ) {
+    return CasamentoAtual(
+      id: registro['id']?.toString() ?? '',
+      organizacaoId: registro['organizacao_id']?.toString() ?? '',
+      titulo: registro['titulo']?.toString() ?? 'Evento',
+      nomePessoa1: _textoOpcional(registro['nome_pessoa_1']),
+      nomePessoa2: _textoOpcional(registro['nome_pessoa_2']),
+      tipoEvento: tipoEventoFromBanco(registro['tipo_evento']),
+      rotuloPessoas: _textoOpcional(registro['rotulo_pessoas']),
+      detalhesEvento: _mapa(registro['detalhes_evento']),
+      dataEvento: DateTime.tryParse(registro['data_evento']?.toString() ?? ''),
+      horarioEvento: _textoOpcional(registro['horario_evento']),
+      localEvento: _textoOpcional(registro['local_evento']),
+      status: registro['status']?.toString() ?? 'ativo',
+      papel: papel,
+    );
   }
 
   /// Atualiza a lista assim que um casamento ou vínculo de acesso mudar,
@@ -283,7 +410,7 @@ class CasamentoAtualServico {
       assinaturas.add(
         stream.listen(
           (_) => agendarAtualizacao(),
-          onError: atualizacoes.addError,
+          onError: (_) => agendarAtualizacao(),
         ),
       );
     }
@@ -311,9 +438,9 @@ class CasamentoAtualServico {
     }
   }
 
-  /// Informa imediatamente quando o casamento selecionado deixa de estar
-  /// disponível para a conta atual. O encerramento não revoga o acesso:
-  /// nesse caso o casamento permanece disponível em modo somente leitura.
+  /// Informa imediatamente quando o casamento selecionado muda de status ou
+  /// deixa de estar disponível para a conta atual. A tela decide se deve
+  /// retornar o funcionário à lista quando o evento for finalizado.
   ///
   /// As tabelas são observadas pelo Realtime e, a cada mudança, o acesso é
   /// confirmado novamente pelo próprio RLS do Supabase. Se a consulta não
@@ -340,7 +467,7 @@ class CasamentoAtualServico {
       assinaturas.add(
         stream.listen(
           (_) => agendarVerificacao(),
-          onError: atualizacoes.addError,
+          onError: (_) => agendarVerificacao(),
         ),
       );
     }
@@ -385,6 +512,31 @@ class CasamentoAtualServico {
       await Future.wait(assinaturas.map((assinatura) => assinatura.cancel()));
       await atualizacoes.close();
     }
+  }
+
+  /// Confirma o acesso atual ao voltar do modo offline ou do segundo plano.
+  /// Uma exclusão feita por outra conta aparece como uma consulta vazia por
+  /// causa do RLS, mesmo que a cópia antiga ainda esteja no SQLite.
+  Future<bool> confirmarAcessoOnline() async {
+    final casamentoSelecionado = _casamento;
+    if (casamentoSelecionado == null ||
+        _supabase.auth.currentSession == null) {
+      return false;
+    }
+
+    final registros = await _supabase
+        .from('casamentos')
+        .select('id')
+        .eq('id', casamentoSelecionado.id)
+        .limit(1);
+
+    final lista = registros as List;
+    if (lista.isEmpty) {
+      limpar();
+      return false;
+    }
+
+    return true;
   }
 
   Future<CasamentoAtual> criarCasamento({

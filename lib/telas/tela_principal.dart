@@ -15,10 +15,13 @@ import 'aba_recepcao.dart';
 import 'porta_entrada.dart';
 import 'tela_conflitos.dart';
 import 'tela_casamentos.dart';
-import 'tela_conta.dart';
+
+enum _AcaoMenuEvento { editar, conflitos, sair }
 
 class TelaPrincipal extends StatefulWidget {
-  const TelaPrincipal({super.key});
+  final bool somenteLeituraInicial;
+
+  const TelaPrincipal({super.key, this.somenteLeituraInicial = false});
 
   @override
   State<TelaPrincipal> createState() => _TelaPrincipalState();
@@ -31,19 +34,32 @@ class _TelaPrincipalState extends State<TelaPrincipal>
 
   late final Stream<List<ConflitoSincronizacao>> _streamConflitos;
 
-
   StreamSubscription<String>? _assinaturaSessaoRevogada;
   StreamSubscription<bool>? _assinaturaAcessoCasamento;
   bool _tratandoSessaoRevogada = false;
   bool _tratandoAcessoRevogado = false;
+  bool _tratandoEventoFinalizado = false;
+  bool _eventoJaFinalizadoAoAbrir = false;
 
   int _abaSelecionada = 0;
+
+  void _abrirAbaRecepcao() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _abaSelecionada = 0;
+    });
+  }
 
   @override
   void initState() {
     super.initState();
 
     _streamConflitos = _servico.listarConflitosPendentes();
+    _eventoJaFinalizadoAoAbrir =
+        widget.somenteLeituraInicial ||
+        (CasamentoAtualServico.instance.casamento?.encerrado ?? false);
 
     WidgetsBinding.instance.addObserver(this);
     _assinaturaSessaoRevogada = SessaoServico.instance.sessoesRevogadas.listen(
@@ -54,9 +70,21 @@ class _TelaPrincipalState extends State<TelaPrincipal>
         .listen(
           (possuiAcesso) {
             if (!possuiAcesso) {
+              if (widget.somenteLeituraInicial) {
+                if (mounted) setState(() {});
+                return;
+              }
               unawaited(_tratarAcessoAoCasamentoRevogado());
             } else if (mounted) {
-              setState(() {});
+              final casamento = CasamentoAtualServico.instance.casamento;
+              if (casamento != null &&
+                  !casamento.ehAdmin &&
+                  casamento.encerrado &&
+                  !_eventoJaFinalizadoAoAbrir) {
+                unawaited(_tratarEventoFinalizado());
+              } else {
+                setState(() {});
+              }
             }
           },
           onError: (Object erro, StackTrace stackTrace) {
@@ -85,6 +113,10 @@ class _TelaPrincipalState extends State<TelaPrincipal>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       SessaoServico.instance.renovarSessao();
+      // Também revalida o acesso ao servidor ao voltar do segundo plano.
+      // Isso remove uma cópia offline quando a conta ou o evento foi excluído
+      // em outro aparelho enquanto este celular estava sem internet.
+      unawaited(_sincronizarAgora());
     }
   }
 
@@ -160,6 +192,17 @@ class _TelaPrincipalState extends State<TelaPrincipal>
     );
   }
 
+  Future<void> _tratarEventoFinalizado() async {
+    if (!mounted || _tratandoEventoFinalizado) return;
+    _tratandoEventoFinalizado = true;
+
+    CasamentoAtualServico.instance.limpar();
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const TelaCasamentos(abaInicial: 1)),
+      (route) => false,
+    );
+  }
+
   void _atualizarEstadoSincronizacao() {
     if (!mounted) {
       return;
@@ -187,6 +230,23 @@ class _TelaPrincipalState extends State<TelaPrincipal>
 
     if (!mounted) {
       return;
+    }
+
+    if (!resultado.semConexao &&
+        CasamentoAtualServico.instance.casamento != null) {
+      try {
+        final possuiAcesso =
+            await CasamentoAtualServico.instance.confirmarAcessoOnline();
+        if (!possuiAcesso) {
+          await _tratarAcessoAoCasamentoRevogado();
+          return;
+        }
+      } catch (erro) {
+        // Uma falha transitória de rede não deve expulsar quem está usando a
+        // cópia offline. O Realtime e a próxima sincronização tentarão de
+        // novo quando o servidor estiver acessível.
+        debugPrint('Não foi possível confirmar o acesso ao evento: $erro');
+      }
     }
 
     if (resultado.listaFoiRedefinida) {
@@ -360,6 +420,19 @@ class _TelaPrincipalState extends State<TelaPrincipal>
     }
   }
 
+  Future<void> _editarEventoAtual() async {
+    final evento = CasamentoAtualServico.instance.casamento;
+    if (evento == null || !evento.ehAdmin || evento.encerrado) return;
+
+    await mostrarDialogoEdicaoEvento(
+      context: context,
+      servico: CasamentoAtualServico.instance,
+      evento: evento,
+    );
+
+    if (mounted) setState(() {});
+  }
+
   String _obterTituloStatusSincronizacao() {
     switch (_sincronizacao.status) {
       case StatusSincronizacao.aguardando:
@@ -392,55 +465,66 @@ class _TelaPrincipalState extends State<TelaPrincipal>
     );
   }
 
-  Widget _construirBotaoConflitos() {
+  Widget _construirMenuEvento({
+    required bool ehAdmin,
+    required bool somenteLeitura,
+  }) {
     return StreamBuilder<List<ConflitoSincronizacao>>(
       stream: _streamConflitos,
       builder: (context, snapshot) {
         final quantidade = snapshot.data?.length ?? 0;
 
-        return Stack(
-          clipBehavior: Clip.none,
-          children: [
-            IconButton(
-              tooltip: quantidade == 0
-                  ? 'Nenhum conflito pendente'
-                  : '$quantidade conflito(s) pendente(s)',
-              onPressed: _abrirConflitos,
-              icon: Icon(
-                quantidade == 0
-                    ? Icons.verified_outlined
-                    : Icons.warning_amber_rounded,
+        return PopupMenuButton<_AcaoMenuEvento>(
+          tooltip: 'Mais opções',
+          icon: const Icon(Icons.more_vert),
+          onSelected: (acao) {
+            switch (acao) {
+              case _AcaoMenuEvento.editar:
+                unawaited(_editarEventoAtual());
+                break;
+              case _AcaoMenuEvento.conflitos:
+                unawaited(_abrirConflitos());
+                break;
+              case _AcaoMenuEvento.sair:
+                unawaited(_sair());
+                break;
+            }
+          },
+          itemBuilder: (_) => [
+            if (ehAdmin && !somenteLeitura)
+              const PopupMenuItem(
+                value: _AcaoMenuEvento.editar,
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.edit_outlined),
+                  title: Text('Editar informações do evento'),
+                ),
               ),
-            ),
-            if (quantidade > 0)
-              Positioned(
-                right: 4,
-                top: 4,
-                child: Container(
-                  constraints: const BoxConstraints(
-                    minWidth: 18,
-                    minHeight: 18,
+            if (!somenteLeitura)
+              PopupMenuItem(
+                value: _AcaoMenuEvento.conflitos,
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    quantidade == 0
+                        ? Icons.verified_outlined
+                        : Icons.warning_amber_rounded,
                   ),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 5,
-                    vertical: 1,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.red,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white, width: 1.5),
-                  ),
-                  child: Text(
-                    quantidade > 99 ? '99+' : quantidade.toString(),
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  title: Text(
+                    quantidade == 0
+                        ? 'Conflitos de sincronização'
+                        : 'Conflitos de sincronização ($quantidade)',
                   ),
                 ),
               ),
+            const PopupMenuItem(
+              value: _AcaoMenuEvento.sair,
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.logout),
+                title: Text('Sair do aplicativo'),
+              ),
+            ),
           ],
         );
       },
@@ -584,10 +668,7 @@ class _TelaPrincipalState extends State<TelaPrincipal>
                 key: const ValueKey('sincronizando'),
                 width: 20,
                 height: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: cor,
-                ),
+                child: CircularProgressIndicator(strokeWidth: 2, color: cor),
               )
             : Icon(
                 _obterIconeSincronizacao(),
@@ -658,30 +739,28 @@ class _TelaPrincipalState extends State<TelaPrincipal>
     final telas = <Widget>[
       const AbaRecepcao(),
       const AbaMesas(),
-      if (ehAdmin && !somenteLeitura) const AbaCadastro(),
+      if (ehAdmin && !somenteLeitura)
+        AbaCadastro(onListaImportada: _abrirAbaRecepcao),
       if (ehAdmin && !somenteLeitura) const AbaEquipe(),
     ];
-    final navegacao = <BottomNavigationBarItem>[
-      const BottomNavigationBarItem(
+    final navegacao = <NavigationDestination>[
+      const NavigationDestination(
         icon: Icon(Icons.event_outlined),
-        activeIcon: Icon(Icons.event),
+        selectedIcon: Icon(Icons.event),
         label: 'Eventos',
       ),
-      const BottomNavigationBarItem(
-        icon: Icon(Icons.search),
-        label: 'Recepção',
-      ),
-      const BottomNavigationBarItem(
+      const NavigationDestination(icon: Icon(Icons.search), label: 'Recepção'),
+      const NavigationDestination(
         icon: Icon(Icons.table_restaurant),
         label: 'Mesas',
       ),
       if (ehAdmin && !somenteLeitura)
-        const BottomNavigationBarItem(
+        const NavigationDestination(
           icon: Icon(Icons.add_circle_outline),
           label: 'Cadastros',
         ),
       if (ehAdmin && !somenteLeitura)
-        const BottomNavigationBarItem(
+        const NavigationDestination(
           icon: Icon(Icons.groups_outlined),
           label: 'Equipe',
         ),
@@ -694,16 +773,18 @@ class _TelaPrincipalState extends State<TelaPrincipal>
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         title: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               casamento?.titulo ?? 'Gestão do Evento',
-              style: const TextStyle(fontSize: 19),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
             ),
             Text(
-              '${ehAdmin ? 'Administradora' : 'Funcionário'}'
+              '${ehAdmin ? 'Responsável' : 'Membro da equipe'}'
               '${somenteLeitura ? ' • Somente leitura' : ''}: $nomeUsuario',
               style: const TextStyle(
                 fontSize: 12,
@@ -713,19 +794,10 @@ class _TelaPrincipalState extends State<TelaPrincipal>
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: 'Configurações da conta',
-            onPressed: () => Navigator.of(
-              context,
-            ).push(MaterialPageRoute(builder: (_) => const TelaConta())),
-            icon: const Icon(Icons.settings_outlined),
-          ),
-          if (!somenteLeitura) _construirBotaoConflitos(),
           _construirBotaoSincronizacao(),
-          IconButton(
-            tooltip: 'Sair',
-            onPressed: _sair,
-            icon: const Icon(Icons.logout),
+          _construirMenuEvento(
+            ehAdmin: ehAdmin,
+            somenteLeitura: somenteLeitura,
           ),
         ],
       ),
@@ -754,10 +826,10 @@ class _TelaPrincipalState extends State<TelaPrincipal>
           ),
         ],
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        type: BottomNavigationBarType.fixed,
-        currentIndex: _abaSelecionada + 1,
-        onTap: (index) {
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _abaSelecionada + 1,
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        onDestinationSelected: (index) {
           FocusManager.instance.primaryFocus?.unfocus();
 
           if (index == 0) {
@@ -769,7 +841,7 @@ class _TelaPrincipalState extends State<TelaPrincipal>
             _abaSelecionada = index - 1;
           });
         },
-        items: navegacao,
+        destinations: navegacao,
       ),
     );
   }

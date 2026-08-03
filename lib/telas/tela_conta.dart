@@ -17,6 +17,7 @@ class _TelaContaState extends State<TelaConta> {
   PapeisContaAtual? _papeis;
   bool _salvando = false;
   bool _habilitando = false;
+  bool _excluindoConta = false;
 
   @override
   void initState() {
@@ -96,6 +97,118 @@ class _TelaContaState extends State<TelaConta> {
       MaterialPageRoute(builder: (_) => const TelaPortaDeEntrada()),
       (_) => false,
     );
+  }
+
+  Future<void> _excluirConta() async {
+    if (_excluindoConta) return;
+
+    final confirmouRisco = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Excluir conta?'),
+        content: const Text(
+          'Esta ação é permanente. Sua conta, seus dados pessoais, '
+          'organizações, eventos, listas, check-ins, equipe e mensagens '
+          'relacionados serão excluídos.\n\n'
+          'Se você participar de eventos de outra pessoa, seu acesso e '
+          'seus registros também serão removidos. Não será possível desfazer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Continuar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmouRisco != true || !mounted) return;
+
+    final emailAtual = SessaoServico.instance.emailAtual.trim().toLowerCase();
+    final emailController = TextEditingController();
+    final confirmouEmail = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, atualizarDialogo) {
+            final emailConfere = emailController.text.trim().toLowerCase() ==
+                emailAtual;
+
+            return AlertDialog(
+              title: const Text('Confirme sua identidade'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Para excluir definitivamente a conta, digite abaixo o '
+                    'e-mail registrado nela.',
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: emailController,
+                    autofocus: true,
+                    keyboardType: TextInputType.emailAddress,
+                    autocorrect: false,
+                    decoration: const InputDecoration(
+                      labelText: 'E-mail da conta',
+                      prefixIcon: Icon(Icons.email_outlined),
+                    ),
+                    onChanged: (_) => atualizarDialogo(() {}),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Cancelar'),
+                ),
+                FilledButton(
+                  onPressed: emailConfere
+                      ? () => Navigator.pop(dialogContext, true)
+                      : null,
+                  child: const Text('Excluir definitivamente'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    final emailParaExcluir = emailController.text;
+    emailController.dispose();
+
+    if (confirmouEmail != true || !mounted) return;
+
+    setState(() => _excluindoConta = true);
+    try {
+      await SessaoServico.instance.excluirConta(
+        emailConfirmacao: emailParaExcluir,
+      );
+
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const TelaPortaDeEntrada()),
+        (_) => false,
+      );
+    } catch (erro) {
+      if (!mounted) return;
+      _mostrarMensagem(
+        'Não foi possível excluir a conta. Verifique sua conexão e tente '
+        'novamente. Nenhum dado foi removido. ',
+      );
+    } finally {
+      if (mounted) setState(() => _excluindoConta = false);
+    }
   }
 
   @override
@@ -208,6 +321,34 @@ class _TelaContaState extends State<TelaConta> {
                 title: const Text('Trocar de conta'),
                 subtitle: const Text('Sair para entrar ou criar outra conta.'),
                 onTap: () => _trocarConta(context),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Zona de risco',
+              style: TextStyle(
+                color: Colors.red,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.delete_forever_outlined,
+                    color: Colors.red),
+                title: const Text('Excluir minha conta'),
+                subtitle: const Text(
+                  'Apaga permanentemente a conta e todos os dados relacionados.',
+                ),
+                trailing: _excluindoConta
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.chevron_right),
+                enabled: !_excluindoConta,
+                onTap: _excluindoConta ? null : _excluirConta,
               ),
             ),
           ],

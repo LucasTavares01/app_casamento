@@ -839,6 +839,7 @@ class SupabaseServico {
       'casamento_id': _casamentoAtualId,
       'staff_id': staffId,
       'mensagem': mensagem,
+      'usuario_id': _obterUsuarioAtualId(),
     });
   }
 

@@ -11,12 +11,28 @@ import 'porta_entrada.dart';
 import 'tela_conta.dart';
 import 'tela_principal.dart';
 
-enum _AcaoMenuCasamento { editar, arquivar, restaurar, excluir }
+Future<CasamentoAtual?> mostrarDialogoEdicaoEvento({
+  required BuildContext context,
+  required CasamentoAtualServico servico,
+  required CasamentoAtual evento,
+}) {
+  return showDialog<CasamentoAtual>(
+    context: context,
+    builder: (_) => _DialogNovoCasamento(
+      servico: servico,
+      existente: evento,
+    ),
+  );
+}
+
+enum _AcaoMenuCasamento { editar, excluir }
 
 enum _ModoPerfil { funcionario, cerimonialista }
 
 class TelaCasamentos extends StatefulWidget {
-  const TelaCasamentos({super.key});
+  final int abaInicial;
+
+  const TelaCasamentos({super.key, this.abaInicial = 0});
 
   @override
   State<TelaCasamentos> createState() => _TelaCasamentosState();
@@ -27,6 +43,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
   final CasamentoAtualServico _casamentos = CasamentoAtualServico.instance;
   final SincronizacaoServico _sincronizacao = SincronizacaoServico.instance;
   final TextEditingController _pesquisa = TextEditingController();
+  final FocusNode _focoPesquisa = FocusNode();
 
   late Stream<List<CasamentoAtual>> _casamentosEmTempoReal;
   late final TabController _abasController;
@@ -41,13 +58,20 @@ class _TelaCasamentosState extends State<TelaCasamentos>
   );
   _ModoPerfil _modoPerfil = _ModoPerfil.funcionario;
   bool _habilitandoCerimonialista = false;
+  bool _mostrarPesquisa = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _casamentosEmTempoReal = _criarStreamCasamentos();
-    _abasController = TabController(length: 2, vsync: this);
+    final abaInicial = widget.abaInicial.clamp(0, 1).toInt();
+    _abaSelecionada = abaInicial;
+    _abasController = TabController(
+      length: 2,
+      initialIndex: abaInicial,
+      vsync: this,
+    );
     _abasController.addListener(_aoTrocarAba);
     _pesquisa.addListener(_aoPesquisar);
     unawaited(_carregarPermissao());
@@ -60,6 +84,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
     _abasController.dispose();
     _pesquisa.removeListener(_aoPesquisar);
     _pesquisa.dispose();
+    _focoPesquisa.dispose();
     super.dispose();
   }
 
@@ -83,19 +108,43 @@ class _TelaCasamentosState extends State<TelaCasamentos>
     if (mounted) setState(() {});
   }
 
+  void _abrirPesquisa() {
+    setState(() => _mostrarPesquisa = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focoPesquisa.requestFocus();
+    });
+  }
+
+  void _fecharPesquisa() {
+    _focoPesquisa.unfocus();
+    _pesquisa.clear();
+    setState(() => _mostrarPesquisa = false);
+  }
+
   Future<void> _carregarPermissao() async {
     try {
       final papeis = await _casamentos.obterPapeisContaAtual();
       if (mounted) {
+        final deveAbrirComoFuncionario =
+            SessaoServico.instance.deveAbrirComoFuncionario;
         setState(() {
           _papeis = papeis;
           _podeCriarCasamentos = papeis.cerimonialista;
-          if (papeis.cerimonialista) {
+          if (deveAbrirComoFuncionario && papeis.funcionario) {
+            _modoPerfil = _ModoPerfil.funcionario;
+            _abaSelecionada = 0;
+            _abasController.index = 0;
+          } else if (papeis.cerimonialista) {
             _modoPerfil = _ModoPerfil.cerimonialista;
           } else if (papeis.funcionario) {
             _modoPerfil = _ModoPerfil.funcionario;
           }
         });
+        if (deveAbrirComoFuncionario && papeis.funcionario) {
+          unawaited(
+            SessaoServico.instance.consumirAberturaComoFuncionario(),
+          );
+        }
       }
     } catch (_) {
       if (mounted) {
@@ -190,7 +239,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
           aoTocar: cerimonialistaDisponivel
               ? () => setState(() => _modoPerfil = _ModoPerfil.cerimonialista)
               : _habilitarCerimonialista,
-          icone: Icons.favorite_outline,
+          icone: Icons.fact_check_outlined,
         ),
       ],
     );
@@ -215,9 +264,13 @@ class _TelaCasamentosState extends State<TelaCasamentos>
     try {
       await _casamentos.selecionar(casamento);
       if (!mounted) return;
-      await Navigator.of(
-        context,
-      ).push(MaterialPageRoute(builder: (_) => const TelaPrincipal()));
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => TelaPrincipal(
+            somenteLeituraInicial: casamento.encerrado,
+          ),
+        ),
+      );
     } catch (erro) {
       _mostrarErro(erro.toString().replaceFirst('Bad state: ', ''));
     }
@@ -251,7 +304,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
         title: const Text('Encerrar evento?'),
         content: Text(
           'O evento “${casamento.descricao}” será finalizado. A equipe '
-          'funcionários continuarão vendo o evento em Arquivados, apenas '
+          'de funcionários continuará vendo o evento em Finalizados, apenas '
           'para consulta, sem poder alterar lista, mesas ou chegadas.',
         ),
         actions: [
@@ -275,49 +328,6 @@ class _TelaCasamentosState extends State<TelaCasamentos>
       executar: () => _casamentos.finalizarCasamento(casamento),
       sucesso: 'Evento encerrado com sucesso.',
       erro: 'Não foi possível encerrar o evento',
-    );
-  }
-
-  Future<void> _arquivar(CasamentoAtual casamento) async {
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Arquivar evento?'),
-        content: Text(
-          '“${casamento.descricao}” sairá da lista principal, mas nenhum dado '
-          'será apagado. Você poderá restaurá-lo pela aba Arquivados.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton.tonal(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Arquivar'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmar != true) return;
-
-    await _executarAcao(
-      casamento: casamento,
-      acao: 'arquivando',
-      executar: () => _casamentos.arquivarCasamento(casamento),
-      sucesso: 'Evento arquivado.',
-      erro: 'Não foi possível arquivar o evento',
-    );
-  }
-
-  Future<void> _restaurar(CasamentoAtual casamento) async {
-    await _executarAcao(
-      casamento: casamento,
-      acao: 'restaurando',
-      executar: () => _casamentos.restaurarCasamentoArquivado(casamento),
-      sucesso: 'Evento restaurado para a lista principal.',
-      erro: 'Não foi possível restaurar o evento',
     );
   }
 
@@ -456,13 +466,40 @@ class _TelaCasamentosState extends State<TelaCasamentos>
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
-        title: const Text('Meus eventos'),
+        title: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Meus eventos'),
+            Text(
+              _modoPerfil == _ModoPerfil.cerimonialista
+                  ? 'Cerimonialista'
+                  : 'Funcionário',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: Theme.of(context).colorScheme.onPrimaryContainer,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
         actions: [
           IconButton(
+            tooltip: _mostrarPesquisa
+                ? 'Fechar pesquisa'
+                : 'Pesquisar eventos',
+            onPressed: _mostrarPesquisa ? _fecharPesquisa : _abrirPesquisa,
+            icon: Icon(
+              _mostrarPesquisa ? Icons.close : Icons.search,
+            ),
+          ),
+          IconButton(
             tooltip: 'Configurações da conta',
-            onPressed: () => Navigator.of(
-              context,
-            ).push(MaterialPageRoute(builder: (_) => const TelaConta())),
+            onPressed: () async {
+              await Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => const TelaConta()));
+              if (mounted) await _carregarPermissao();
+            },
             icon: const Icon(Icons.settings_outlined),
           ),
           IconButton(
@@ -513,49 +550,54 @@ class _TelaCasamentosState extends State<TelaCasamentos>
               )
               .toList();
           final ativos = todos
-              .where((casamento) => !_estaArquivadoNaVisao(casamento))
+              .where((casamento) => !_estaFinalizadoNaVisao(casamento))
               .toList();
-          final arquivados = todos
-              .where((casamento) => _estaArquivadoNaVisao(casamento))
+          final finalizados = todos
+              .where((casamento) => _estaFinalizadoNaVisao(casamento))
               .toList();
 
-          final listaAtual = _abaSelecionada == 0 ? ativos : arquivados;
+          final listaAtual = _abaSelecionada == 0 ? ativos : finalizados;
           final filtrados = _filtrarCasamentos(listaAtual);
 
           return Column(
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                child: _construirSeletorPerfis(),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                child: TextField(
-                  controller: _pesquisa,
-                  textInputAction: TextInputAction.search,
-                  decoration: InputDecoration(
-                    hintText: 'Pesquisar evento',
-                    prefixIcon: const Icon(Icons.search),
-                    suffixIcon: _pesquisa.text.isEmpty
-                        ? null
-                        : IconButton(
-                            tooltip: 'Limpar pesquisa',
-                            onPressed: _pesquisa.clear,
-                            icon: const Icon(Icons.close),
-                          ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(16),
+              if (_papeis.funcionario && _papeis.cerimonialista)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                  child: _construirSeletorPerfis(),
+                ),
+              if (_mostrarPesquisa)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                  child: TextField(
+                    controller: _pesquisa,
+                    focusNode: _focoPesquisa,
+                    textInputAction: TextInputAction.search,
+                    decoration: InputDecoration(
+                      hintText: 'Pesquisar evento',
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIcon: _pesquisa.text.isEmpty
+                          ? null
+                          : IconButton(
+                              tooltip: 'Limpar pesquisa',
+                              onPressed: _pesquisa.clear,
+                              icon: const Icon(Icons.close),
+                            ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
                     ),
                   ),
                 ),
-              ),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: TabBar(
+              child: TabBar(
                   controller: _abasController,
+                  indicatorSize: TabBarIndicatorSize.tab,
+                  indicatorWeight: 3,
                   tabs: [
                     Tab(text: 'Meus eventos (${ativos.length})'),
-                    Tab(text: 'Arquivados (${arquivados.length})'),
+                    Tab(text: 'Finalizados (${finalizados.length})'),
                   ],
                 ),
               ),
@@ -564,7 +606,8 @@ class _TelaCasamentosState extends State<TelaCasamentos>
                 child: filtrados.isEmpty
                     ? _EstadoListaVazia(
                         pesquisando: _pesquisa.text.trim().isNotEmpty,
-                        arquivados: _abaSelecionada == 1,
+                        finalizados: _abaSelecionada == 1,
+                        temEventos: todos.isNotEmpty,
                         podeCriar:
                             _podeCriarCasamentos &&
                             _modoPerfil == _ModoPerfil.cerimonialista,
@@ -581,7 +624,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
                             casamento: filtrados[index],
                             processando:
                                 _casamentoProcessandoId == filtrados[index].id,
-                            arquivadoNaLista: _estaArquivadoNaVisao(
+                            finalizadoNaLista: _estaFinalizadoNaVisao(
                               filtrados[index],
                             ),
                             acaoEmAndamento: _acaoEmAndamento,
@@ -590,8 +633,6 @@ class _TelaCasamentosState extends State<TelaCasamentos>
                             onEncerrar: () => _finalizar(filtrados[index]),
                             onRelatorio: () =>
                                 _gerarRelatorio(filtrados[index]),
-                            onArquivar: () => _arquivar(filtrados[index]),
-                            onRestaurar: () => _restaurar(filtrados[index]),
                             onExcluir: () => _excluir(filtrados[index]),
                           ),
                         ),
@@ -604,10 +645,9 @@ class _TelaCasamentosState extends State<TelaCasamentos>
     );
   }
 
-  bool _estaArquivadoNaVisao(CasamentoAtual casamento) {
+  bool _estaFinalizadoNaVisao(CasamentoAtual casamento) {
     return casamento.status == 'arquivado' ||
-        (_modoPerfil == _ModoPerfil.funcionario &&
-            casamento.status == 'finalizado');
+        casamento.status == 'finalizado';
   }
 
   List<CasamentoAtual> _filtrarCasamentos(List<CasamentoAtual> casamentos) {
@@ -648,35 +688,31 @@ class _TelaCasamentosState extends State<TelaCasamentos>
 class _CardCasamento extends StatelessWidget {
   final CasamentoAtual casamento;
   final bool processando;
-  final bool arquivadoNaLista;
+  final bool finalizadoNaLista;
   final String? acaoEmAndamento;
   final VoidCallback onAbrir;
   final VoidCallback onEditar;
   final VoidCallback onEncerrar;
   final VoidCallback onRelatorio;
-  final VoidCallback onArquivar;
-  final VoidCallback onRestaurar;
   final VoidCallback onExcluir;
 
   const _CardCasamento({
     required this.casamento,
     required this.processando,
-    required this.arquivadoNaLista,
+    required this.finalizadoNaLista,
     required this.acaoEmAndamento,
     required this.onAbrir,
     required this.onEditar,
     required this.onEncerrar,
     required this.onRelatorio,
-    required this.onArquivar,
-    required this.onRestaurar,
     required this.onExcluir,
   });
 
   @override
   Widget build(BuildContext context) {
     final tema = Theme.of(context);
-    final arquivado = arquivadoNaLista;
     final finalizado = casamento.status == 'finalizado';
+    final arquivado = casamento.status == 'arquivado';
     final somenteLeitura = casamento.encerrado;
 
     return Card(
@@ -741,43 +777,19 @@ class _CardCasamento extends StatelessWidget {
                           case _AcaoMenuCasamento.editar:
                             onEditar();
                             break;
-                          case _AcaoMenuCasamento.arquivar:
-                            onArquivar();
-                            break;
-                          case _AcaoMenuCasamento.restaurar:
-                            onRestaurar();
-                            break;
                           case _AcaoMenuCasamento.excluir:
                             onExcluir();
                             break;
                         }
                       },
                       itemBuilder: (context) => [
-                        if (!arquivado)
+                        if (!somenteLeitura)
                           const PopupMenuItem(
                             value: _AcaoMenuCasamento.editar,
                             child: ListTile(
                               contentPadding: EdgeInsets.zero,
                               leading: Icon(Icons.edit_outlined),
                               title: Text('Editar informações'),
-                            ),
-                          ),
-                        if (arquivado)
-                          const PopupMenuItem(
-                            value: _AcaoMenuCasamento.restaurar,
-                            child: ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              leading: Icon(Icons.unarchive_outlined),
-                              title: Text('Restaurar'),
-                            ),
-                          )
-                        else
-                          const PopupMenuItem(
-                            value: _AcaoMenuCasamento.arquivar,
-                            child: ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              leading: Icon(Icons.archive_outlined),
-                              title: Text('Arquivar'),
                             ),
                           ),
                         const PopupMenuItem(
@@ -839,11 +851,11 @@ class _CardCasamento extends StatelessWidget {
                     : 'Não informado',
                 icone: Icons.location_on_outlined,
               ),
-              if (arquivado) ...[
+              if (finalizadoNaLista) ...[
                 const SizedBox(height: 14),
                 Text(
-                  somenteLeitura
-                      ? 'Este evento foi encerrado e está disponível '
+                  finalizado
+                      ? 'Este evento foi finalizado e está disponível '
                             'somente para leitura.'
                       : 'Restaure este evento para acessá-lo novamente.',
                   style: tema.textTheme.bodySmall?.copyWith(
@@ -953,7 +965,7 @@ class _InfoCasamento extends StatelessWidget {
   Widget build(BuildContext context) {
     final tema = Theme.of(context);
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Icon(icone, size: 18, color: tema.colorScheme.onSurfaceVariant),
         const SizedBox(width: 9),
@@ -1005,13 +1017,15 @@ class _EstadoErro extends StatelessWidget {
 
 class _EstadoListaVazia extends StatelessWidget {
   final bool pesquisando;
-  final bool arquivados;
+  final bool finalizados;
+  final bool temEventos;
   final bool podeCriar;
   final VoidCallback onCriar;
 
   const _EstadoListaVazia({
     required this.pesquisando,
-    required this.arquivados,
+    required this.finalizados,
+    required this.temEventos,
     required this.podeCriar,
     required this.onCriar,
   });
@@ -1020,13 +1034,17 @@ class _EstadoListaVazia extends StatelessWidget {
   Widget build(BuildContext context) {
     final titulo = pesquisando
         ? 'Nenhum evento encontrado'
-        : arquivados
-        ? 'Nenhum evento arquivado'
+        : finalizados
+        ? 'Nenhum evento finalizado'
+        : temEventos
+        ? 'Nenhum evento ativo'
         : 'Você ainda não tem eventos cadastrados';
     final descricao = pesquisando
         ? 'Tente pesquisar por outro nome, status, data ou local.'
-        : arquivados
-        ? 'Os eventos arquivados aparecerão aqui.'
+        : finalizados
+        ? 'Os eventos finalizados aparecerão aqui.'
+        : temEventos
+        ? 'Seus eventos finalizados continuam disponíveis na aba Finalizados.'
         : 'Crie o primeiro evento para montar a lista e convidar sua equipe.';
 
     return Center(
@@ -1038,8 +1056,8 @@ class _EstadoListaVazia extends StatelessWidget {
             Icon(
               pesquisando
                   ? Icons.search_off_outlined
-                  : arquivados
-                  ? Icons.inventory_2_outlined
+                  : finalizados
+                  ? Icons.task_alt_outlined
                   : Icons.event_outlined,
               size: 60,
             ),
@@ -1051,12 +1069,14 @@ class _EstadoListaVazia extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(descricao, textAlign: TextAlign.center),
-            if (!pesquisando && !arquivados && podeCriar) ...[
+            if (!pesquisando && !finalizados && podeCriar) ...[
               const SizedBox(height: 20),
               ElevatedButton.icon(
                 onPressed: onCriar,
                 icon: const Icon(Icons.add),
-                label: const Text('Criar primeiro evento'),
+                label: Text(
+                  temEventos ? 'Criar novo evento' : 'Criar primeiro evento',
+                ),
               ),
             ],
           ],
@@ -1154,6 +1174,8 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
       firstDate: DateTime(2020),
       lastDate: DateTime(2100),
       initialDate: _data ?? DateTime.now(),
+      locale: const Locale('pt', 'BR'),
+      builder: _construirDialogoLocalizado,
     );
     if (data != null) setState(() => _data = data);
   }
@@ -1162,8 +1184,23 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
     final hora = await showTimePicker(
       context: context,
       initialTime: _hora ?? TimeOfDay.now(),
+      builder: _construirDialogoLocalizado,
     );
     if (hora != null) setState(() => _hora = hora);
+  }
+
+  Widget _construirDialogoLocalizado(BuildContext context, Widget? child) {
+    final dadosTela = MediaQuery.of(context).copyWith(
+      alwaysUse24HourFormat: true,
+    );
+    return MediaQuery(
+      data: dadosTela,
+      child: Localizations.override(
+        context: context,
+        locale: const Locale('pt', 'BR'),
+        child: child ?? const SizedBox.shrink(),
+      ),
+    );
   }
 
   Future<void> _salvar() async {
@@ -1270,11 +1307,24 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
                     border: OutlineInputBorder(),
                   ),
                 ),
-                const SizedBox(height: 4),
-                TextButton.icon(
-                  onPressed: _selecionarData,
-                  icon: const Icon(Icons.calendar_today_outlined),
-                  label: Text(dataTexto),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _selecionarData,
+                    icon: const Icon(Icons.calendar_today_outlined),
+                    label: Text(dataTexto),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Theme.of(context).colorScheme.primary,
+                      side: BorderSide(
+                        color: Theme.of(context).colorScheme.primary,
+                        width: 1.2,
+                      ),
+                      minimumSize: const Size.fromHeight(48),
+                      textStyle: Theme.of(context).textTheme.labelLarge
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                  ),
                 ),
                 if (_validouData && _data == null)
                   const Align(
@@ -1284,13 +1334,27 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
                       style: TextStyle(color: Colors.red),
                     ),
                   ),
-                TextButton.icon(
-                  onPressed: _selecionarHora,
-                  icon: const Icon(Icons.schedule_outlined),
-                  label: Text(
-                    _hora == null
-                        ? 'Definir horário do evento'
-                        : 'Horário: ${_hora!.format(context)}',
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _selecionarHora,
+                    icon: const Icon(Icons.schedule_outlined),
+                    label: Text(
+                      _hora == null
+                          ? 'Definir horário do evento'
+                          : 'Horário: ${_hora!.format(context)}',
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Theme.of(context).colorScheme.primary,
+                      side: BorderSide(
+                        color: Theme.of(context).colorScheme.primary,
+                        width: 1.2,
+                      ),
+                      minimumSize: const Size.fromHeight(48),
+                      textStyle: Theme.of(context).textTheme.labelLarge
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
                   ),
                 ),
                 if (_validouHora && _hora == null)

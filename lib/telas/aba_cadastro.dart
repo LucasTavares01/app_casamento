@@ -6,7 +6,9 @@ import '../servicos/supabase_servico.dart';
 import 'tela_importacao_lista.dart';
 
 class AbaCadastro extends StatefulWidget {
-  const AbaCadastro({super.key});
+  final VoidCallback? onListaImportada;
+
+  const AbaCadastro({super.key, this.onListaImportada});
 
   @override
   State<AbaCadastro> createState() => _AbaCadastroState();
@@ -54,6 +56,7 @@ class _AbaCadastroState extends State<AbaCadastro> {
       context: context,
       builder: (context) {
         return AlertDialog(
+          scrollable: true,
           title: Text(mesaEdit == null ? 'Nova Mesa' : 'Editar Mesa'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -167,6 +170,7 @@ class _AbaCadastroState extends State<AbaCadastro> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
+              scrollable: true,
               title: Text(
                 convidadoEdit == null ? 'Novo Convidado' : 'Editar Convidado',
               ),
@@ -608,6 +612,9 @@ class _AbaCadastroState extends State<AbaCadastro> {
 
   @override
   Widget build(BuildContext context) {
+    final tema = Theme.of(context);
+    final cores = tema.colorScheme;
+
     return DefaultTabController(
       length: 2,
       child: Scaffold(
@@ -619,27 +626,64 @@ class _AbaCadastroState extends State<AbaCadastro> {
         ),
         body: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-              child: SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).push(
+            SizedBox(
+              width: double.infinity,
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () async {
+                    final importada = await Navigator.of(context).push<bool>(
                       MaterialPageRoute(
                         builder: (_) => const TelaImportacaoLista(),
                       ),
                     );
+                    if (importada == true && mounted) {
+                      widget.onListaImportada?.call();
+                    }
                   },
-                  icon: const Icon(Icons.upload_file_outlined),
-                  label: const Text('Importar lista de convidados'),
+                  child: Ink(
+                    height: 58,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.centerLeft,
+                        end: Alignment.centerRight,
+                        colors: [
+                          cores.primary.withValues(alpha: 0.20),
+                          cores.primary.withValues(alpha: 0.04),
+                          Colors.transparent,
+                        ],
+                        stops: const [0.0, 0.42, 1.0],
+                      ),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.upload_file_outlined,
+                            color: cores.primary,
+                            size: 23,
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Text(
+                              'Importar lista de convidados',
+                              style: tema.textTheme.titleMedium?.copyWith(
+                                color: cores.onSurfaceVariant,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          Icon(Icons.chevron_right, color: cores.primary),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ),
             Expanded(
-              child: TabBarView(
-                children: [_listaMesas(), _listaConvidados()],
-              ),
+              child: TabBarView(children: [_listaMesas(), _listaConvidados()]),
             ),
           ],
         ),

@@ -9,6 +9,7 @@ class MembroEquipe {
   final String usuarioId;
   final String nome;
   final String? email;
+  final String? telefone;
   final bool convidadoParaEsteCasamento;
   final bool conviteAceito;
 
@@ -17,6 +18,7 @@ class MembroEquipe {
     required this.usuarioId,
     required this.nome,
     required this.email,
+    required this.telefone,
     required this.convidadoParaEsteCasamento,
     required this.conviteAceito,
   });
@@ -28,6 +30,8 @@ class ResultadoConviteFuncionario {
     required this.notificacaoEnviada,
     required this.contaJaExistia,
     required this.contaMista,
+    this.linkWhatsApp,
+    this.telefoneWhatsApp,
     this.mensagemNotificacao,
   });
 
@@ -35,6 +39,8 @@ class ResultadoConviteFuncionario {
   final bool notificacaoEnviada;
   final bool contaJaExistia;
   final bool contaMista;
+  final String? linkWhatsApp;
+  final String? telefoneWhatsApp;
   final String? mensagemNotificacao;
 }
 
@@ -51,7 +57,7 @@ class EquipeServico {
     final resultados = await Future.wait([
       _supabase
           .from('funcionarios_organizacao')
-          .select('id, usuario_id, nome, email')
+          .select('id, usuario_id, nome, email, telefone')
           .eq('organizacao_id', casamento.organizacaoId)
           .eq('ativo', true)
           .order('nome'),
@@ -74,6 +80,7 @@ class EquipeServico {
         usuarioId: registro['usuario_id'].toString(),
         nome: registro['nome'].toString(),
         email: registro['email']?.toString(),
+        telefone: registro['telefone']?.toString(),
         convidadoParaEsteCasamento: convitesPorUsuario.containsKey(
           registro['usuario_id'].toString(),
         ),
@@ -139,6 +146,7 @@ class EquipeServico {
   Future<ResultadoConviteFuncionario> convidarFuncionario({
     required String nome,
     required String email,
+    String? telefone,
   }) async {
     final casamento = CasamentoAtualServico.instance.casamento;
     if (casamento == null || !casamento.ehAdmin) {
@@ -150,6 +158,7 @@ class EquipeServico {
         'casamento_id': casamento.id,
         'nome': nome.trim(),
         'email': email.trim(),
+        'telefone': telefone?.trim(),
       },
     );
     final dados = Map<String, dynamic>.from(resposta.data as Map);
@@ -158,6 +167,8 @@ class EquipeServico {
       notificacaoEnviada: dados['notificacao_enviada'] == true,
       contaJaExistia: dados['conta_ja_existia'] == true,
       contaMista: dados['conta_mista'] == true,
+      linkWhatsApp: dados['link_whatsapp']?.toString(),
+      telefoneWhatsApp: dados['telefone_whatsapp']?.toString(),
       mensagemNotificacao: dados['mensagem_notificacao']?.toString(),
     );
   }
@@ -182,6 +193,8 @@ class EquipeServico {
       notificacaoEnviada: dados['notificacao_enviada'] == true,
       contaJaExistia: dados['conta_ja_existia'] == true,
       contaMista: dados['conta_mista'] == true,
+      linkWhatsApp: dados['link_whatsapp']?.toString(),
+      telefoneWhatsApp: dados['telefone_whatsapp']?.toString(),
       mensagemNotificacao: dados['mensagem_notificacao']?.toString(),
     );
   }
@@ -197,6 +210,41 @@ class EquipeServico {
         })
         .eq('casamento_id', casamento.id)
         .eq('usuario_id', membro.usuarioId);
+  }
+
+  Future<void> atualizarDadosFuncionario({
+    required MembroEquipe membro,
+    required String nome,
+    required String email,
+    String? telefone,
+  }) async {
+    final casamento = CasamentoAtualServico.instance.casamento;
+    if (casamento == null || !casamento.ehAdmin) {
+      throw StateError('Somente administradoras podem editar funcionários.');
+    }
+
+    final nomeNormalizado = nome.trim();
+    if (nomeNormalizado.length < 2) {
+      throw const FormatException('Informe um nome válido.');
+    }
+    final emailNormalizado = email.trim().toLowerCase();
+    if (!emailNormalizado.contains('@')) {
+      throw const FormatException('Informe um e-mail válido.');
+    }
+
+    final telefoneNormalizado = telefone?.trim();
+    await _supabase
+        .from('funcionarios_organizacao')
+        .update({
+          'nome': nomeNormalizado,
+          'email': emailNormalizado,
+          'telefone': telefoneNormalizado == null || telefoneNormalizado.isEmpty
+              ? null
+              : telefoneNormalizado,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        })
+        .eq('id', membro.funcionarioId)
+        .eq('organizacao_id', casamento.organizacaoId);
   }
 
   Future<void> removerDaEquipe(MembroEquipe membro) async {

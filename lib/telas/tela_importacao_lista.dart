@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../modelos/modelos_importacao.dart';
 import '../servicos/importacao_lista_servico.dart';
 import '../servicos/sincronizacao_servico.dart';
+import '../servicos/supabase_servico.dart';
 
 class TelaImportacaoLista extends StatefulWidget {
   const TelaImportacaoLista({super.key});
@@ -19,8 +22,59 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
   String? _erroPublicacao;
   bool _analisando = false;
   bool _publicando = false;
+  bool? _possuiListaAtual;
+  Timer? _carregamentoTimer;
+  DateTime? _inicioAnalise;
+  Duration _tempoAnalisando = Duration.zero;
+  String _mensagemCarregamento = 'Preparando sua lista…';
+
+  bool get _analiseDemorada => _tempoAnalisando.inSeconds >= 45;
+  bool get _podeSairDuranteAnalise => _tempoAnalisando.inSeconds >= 90;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_atualizarEstadoDaLista());
+  }
+
+  Future<void> _atualizarEstadoDaLista() async {
+    try {
+      final servico = SupabaseServico();
+      final mesas = await servico.listarMesas().first;
+      final convidados = await servico.listarConvidados().first;
+      if (mounted) {
+        setState(() {
+          _possuiListaAtual = mesas.isNotEmpty || convidados.isNotEmpty;
+        });
+      }
+    } catch (_) {
+      // Em caso de dúvida, mantemos a confirmação completa para evitar que
+      // uma lista existente seja substituída sem aviso.
+      if (mounted) {
+        setState(() {
+          _possuiListaAtual = true;
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _carregamentoTimer?.cancel();
+    super.dispose();
+  }
 
   Future<void> _selecionarEAnalisar() async {
+    await _executarAnalise(_servico.selecionarEAnalisarArquivo);
+  }
+
+  Future<void> _tirarFotoEAnalisar() async {
+    await _executarAnalise(_servico.tirarFotoEAnalisar);
+  }
+
+  Future<void> _executarAnalise(
+    Future<ResultadoPreviaImportacao?> Function() iniciar,
+  ) async {
     if (_analisando) {
       return;
     }
@@ -29,10 +83,18 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
       _analisando = true;
       _erro = null;
       _erroPublicacao = null;
+      _inicioAnalise = DateTime.now();
+      _tempoAnalisando = Duration.zero;
+      _mensagemCarregamento = 'Preparando sua lista…';
     });
+    _carregamentoTimer?.cancel();
+    _carregamentoTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => _atualizarCarregamento(),
+    );
 
     try {
-      final resultado = await _servico.selecionarEAnalisarArquivo();
+      final resultado = await iniciar();
 
       if (!mounted || resultado == null) {
         return;
@@ -58,12 +120,171 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
         _erro = 'Não foi possível analisar o arquivo: $erro';
       });
     } finally {
+      _carregamentoTimer?.cancel();
+      _carregamentoTimer = null;
       if (mounted) {
         setState(() {
           _analisando = false;
+          _inicioAnalise = null;
         });
       }
     }
+  }
+
+  void _atualizarCarregamento() {
+    final inicio = _inicioAnalise;
+    if (!mounted || inicio == null) {
+      return;
+    }
+
+    final tempo = DateTime.now().difference(inicio);
+    String mensagem;
+    if (tempo.inSeconds < 4) {
+      mensagem = 'Preparando sua lista…';
+    } else if (tempo.inSeconds < 9) {
+      mensagem = 'Lendo o arquivo…';
+    } else if (tempo.inSeconds < 15) {
+      mensagem = 'Identificando as mesas…';
+    } else if (tempo.inSeconds < 22) {
+      mensagem = 'Organizando os convidados…';
+    } else if (tempo.inSeconds < 30) {
+      mensagem = 'Conferindo nomes e observações…';
+    } else if (tempo.inSeconds < 40) {
+      mensagem = 'Verificando possíveis dúvidas…';
+    } else if (tempo.inSeconds < 45) {
+      mensagem = 'Montando a prévia para revisão…';
+    } else if (tempo.inSeconds < 90) {
+      mensagem = 'A lista é grande; ainda estamos trabalhando nela…';
+    } else {
+      mensagem =
+          'Ainda trabalhando. Você pode aguardar ou voltar e tentar depois.';
+    }
+
+    setState(() {
+      _tempoAnalisando = tempo;
+      _mensagemCarregamento = mensagem;
+    });
+  }
+
+  void _voltarDuranteAnalise() {
+    if (_publicando || !_analisando) {
+      return;
+    }
+    Navigator.of(context).pop();
+  }
+
+  Future<void> _editarNomeConvidado({
+    required int indiceConvidado,
+    int? indiceMesa,
+  }) async {
+    final resultadoAtual = _resultado;
+    if (resultadoAtual == null) {
+      return;
+    }
+
+    final convidado = indiceMesa == null
+        ? resultadoAtual.convidadosSemMesa[indiceConvidado]
+        : resultadoAtual.mesas[indiceMesa].convidados[indiceConvidado];
+    final controlador = TextEditingController(text: convidado.nome);
+
+    final novoNome = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Editar nome do convidado'),
+          content: TextField(
+            controller: controlador,
+            autofocus: true,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(labelText: 'Nome'),
+            onSubmitted: (valor) => Navigator.pop(dialogContext, valor),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, controlador.text),
+              child: const Text('Salvar'),
+            ),
+          ],
+        );
+      },
+    );
+    controlador.dispose();
+
+    final nome = novoNome?.trim();
+    if (!mounted || nome == null || nome.isEmpty) {
+      return;
+    }
+
+    final convidadoAtualizado = convidado.copyWith(nome: nome);
+    if (indiceMesa == null) {
+      final convidados = [...resultadoAtual.convidadosSemMesa];
+      convidados[indiceConvidado] = convidadoAtualizado;
+      setState(() {
+        _resultado = resultadoAtual.copyWith(convidadosSemMesa: convidados);
+      });
+      return;
+    }
+
+    final mesas = [...resultadoAtual.mesas];
+    final convidados = [...mesas[indiceMesa].convidados];
+    convidados[indiceConvidado] = convidadoAtualizado;
+    mesas[indiceMesa] = mesas[indiceMesa].copyWith(convidados: convidados);
+    setState(() {
+      _resultado = resultadoAtual.copyWith(mesas: mesas);
+    });
+  }
+
+  Future<void> _editarDetalheMesa(int indiceMesa) async {
+    final resultadoAtual = _resultado;
+    if (resultadoAtual == null) {
+      return;
+    }
+
+    final mesa = resultadoAtual.mesas[indiceMesa];
+    final controlador = TextEditingController(text: mesa.detalhe);
+    final novoDetalhe = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Editar descrição da mesa'),
+          content: TextField(
+            controller: controlador,
+            autofocus: true,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(
+              labelText: 'Descrição',
+              hintText: 'Ex.: Família, amigos, fornecedores…',
+            ),
+            onSubmitted: (valor) => Navigator.pop(dialogContext, valor),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, controlador.text),
+              child: const Text('Salvar'),
+            ),
+          ],
+        );
+      },
+    );
+    controlador.dispose();
+
+    if (!mounted || novoDetalhe == null) {
+      return;
+    }
+
+    final mesas = [...resultadoAtual.mesas];
+    mesas[indiceMesa] = mesa.copyWith(detalhe: novoDetalhe.trim());
+    setState(() {
+      _resultado = resultadoAtual.copyWith(mesas: mesas);
+    });
   }
 
   Future<void> _confirmarPublicacao(ResultadoPreviaImportacao resultado) async {
@@ -84,7 +305,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'A lista ainda possui problemas que impedem a substituição:',
+                    'A lista ainda possui problemas que impedem a publicação:',
                   ),
                   const SizedBox(height: 12),
                   for (final problema in problemas)
@@ -114,12 +335,20 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
       return;
     }
 
+    await _atualizarEstadoDaLista();
+    if (!mounted) {
+      return;
+    }
+    final possuiListaAtual = _possuiListaAtual ?? true;
+
     final confirmado = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) {
         return AlertDialog(
-          title: const Text('Substituir a lista atual?'),
+          title: Text(
+            possuiListaAtual ? 'Substituir a lista atual?' : 'Salvar lista?',
+          ),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -129,23 +358,31 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
                   'A nova lista possui ${resultado.quantidadeMesas} mesas e '
                   '${resultado.quantidadeConvidados} convidados.',
                 ),
-                const SizedBox(height: 12),
-                const Text(
-                  'Ao confirmar, serão substituídos:',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  '• lista atual de mesas e convidados\n'
-                  '• check-ins e históricos de presença\n'
-                  '• conflitos e operações antigas\n'
-                  '• equipe e mensagens do chat',
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  'Os usuários e as sessões ativas serão preservados. Todos os '
-                  'aparelhos receberão a nova versão da lista em tempo real.',
-                ),
+                if (possuiListaAtual) ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Ao confirmar, serão substituídos:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    '• lista atual de mesas e convidados\n'
+                    '• check-ins e históricos de presença\n'
+                    '• conflitos e operações antigas\n'
+                    '• equipe e mensagens do chat',
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Os usuários e as sessões ativas serão preservados. Todos os '
+                    'aparelhos receberão a nova versão da lista em tempo real.',
+                  ),
+                ] else ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Este evento ainda não possui uma lista cadastrada. Esta '
+                    'será a primeira lista salva para ele.',
+                  ),
+                ],
                 if (resultado.avisos.isNotEmpty) ...[
                   const SizedBox(height: 12),
                   Container(
@@ -162,11 +399,13 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
                     ),
                   ),
                 ],
-                const SizedBox(height: 12),
-                const Text(
-                  'A substituição é permanente.',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
+                if (possuiListaAtual) ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    'A substituição é permanente.',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ],
               ],
             ),
           ),
@@ -182,7 +421,9 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
               ),
               onPressed: () => Navigator.pop(dialogContext, true),
               icon: const Icon(Icons.cloud_upload_outlined),
-              label: const Text('Substituir agora'),
+              label: Text(
+                possuiListaAtual ? 'Substituir agora' : 'Salvar lista',
+              ),
             ),
           ],
         );
@@ -343,18 +584,36 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
             const CircularProgressIndicator(),
             const SizedBox(height: 22),
             Text(
-              'Preparando sua lista',
+              _mensagemCarregamento,
               style: Theme.of(context).textTheme.titleMedium,
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
             const Text(
-              'Estamos identificando as mesas e os convidados. '
-              'Isso pode levar alguns minutos.',
+              'Estamos preparando uma prévia para você revisar. '
+              'Nenhuma informação será alterada ainda.',
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 18),
             const _AvisoSeguro(),
+            if (_analiseDemorada) ...[
+              const SizedBox(height: 14),
+              Text(
+                _podeSairDuranteAnalise
+                    ? 'Você pode voltar e tentar novamente depois. A lista atual continuará intacta.'
+                    : 'Listas maiores podem levar um pouco mais de tempo.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+            if (_podeSairDuranteAnalise) ...[
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: _voltarDuranteAnalise,
+                icon: const Icon(Icons.arrow_back),
+                label: const Text('Voltar e tentar depois'),
+              ),
+            ],
           ],
         ),
       ),
@@ -379,25 +638,18 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
                 ),
                 const SizedBox(height: 14),
                 Text(
-                  'Selecione a lista do casamento',
+                  'Importe sua lista de convidados',
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),
                 const SizedBox(height: 10),
                 const Text(
-                  'A IA identificará todas as mesas e todas as pessoas, mesmo '
-                  'quando a quantidade de convidados for maior que a quantidade '
-                  'de lugares informada.',
+                  'Escolha um arquivo ou fotografe a lista para preparar uma '
+                  'prévia de mesas e convidados.',
                 ),
                 const SizedBox(height: 18),
-                const Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    Chip(label: Text('PDF')),
-                    Chip(label: Text('Excel')),
-                    Chip(label: Text('CSV')),
-                    Chip(label: Text('Imagem')),
-                  ],
+                Text(
+                  'Formatos: PDF, Excel, CSV ou imagem',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 18),
                 SizedBox(
@@ -405,7 +657,16 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
                   child: FilledButton.icon(
                     onPressed: _selecionarEAnalisar,
                     icon: const Icon(Icons.upload_file_outlined),
-                    label: const Text('Selecionar e analisar arquivo'),
+                    label: const Text('Escolher arquivo'),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _tirarFotoEAnalisar,
+                    icon: const Icon(Icons.photo_camera_outlined),
+                    label: const Text('Tirar foto da lista'),
                   ),
                 ),
               ],
@@ -418,39 +679,6 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
           const SizedBox(height: 12),
           _CartaoErro(mensagem: _erro!, tentarNovamente: _selecionarEAnalisar),
         ],
-        const SizedBox(height: 12),
-        const Card(
-          child: Padding(
-            padding: EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'O que a IA vai procurar',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                SizedBox(height: 10),
-                _LinhaInformativa(
-                  icone: Icons.table_restaurant_outlined,
-                  texto: 'Número, nome, detalhe e capacidade de cada mesa.',
-                ),
-                _LinhaInformativa(
-                  icone: Icons.people_alt_outlined,
-                  texto: 'Todos os convidados, sem limitar pelos lugares.',
-                ),
-                _LinhaInformativa(
-                  icone: Icons.child_care_outlined,
-                  texto: 'Bebês, não pagantes e pagantes de 50%.',
-                ),
-                _LinhaInformativa(
-                  icone: Icons.warning_amber_rounded,
-                  texto:
-                      'Nomes ilegíveis, possíveis duplicidades e dados incompletos.',
-                ),
-              ],
-            ),
-          ),
-        ),
       ],
     );
   }
@@ -542,7 +770,12 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
             ),
           )
         else
-          for (final mesa in resultado.mesas) _construirMesa(mesa),
+          for (
+            var indiceMesa = 0;
+            indiceMesa < resultado.mesas.length;
+            indiceMesa++
+          )
+            _construirMesa(resultado.mesas[indiceMesa], indiceMesa),
         if (resultado.convidadosSemMesa.isNotEmpty) ...[
           const SizedBox(height: 12),
           _construirConvidadosSemMesa(resultado.convidadosSemMesa),
@@ -602,7 +835,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
     );
   }
 
-  Widget _construirMesa(MesaPreviaImportacao mesa) {
+  Widget _construirMesa(MesaPreviaImportacao mesa, int indiceMesa) {
     final capacidade = mesa.capacidade;
     final excede = mesa.excedeCapacidade;
 
@@ -620,18 +853,29 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
             if (mesa.detalhe.isNotEmpty) mesa.detalhe,
             '${mesa.quantidadeConvidados} convidado(s)',
             if (capacidade != null) '$capacidade lugar(es)',
+            if (mesa.numeroGeradoAutomaticamente) 'número automático',
           ].join(' • '),
         ),
-        trailing: excede
-            ? Tooltip(
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: 'Editar descrição da mesa',
+              onPressed: () => _editarDetalheMesa(indiceMesa),
+              icon: const Icon(Icons.edit_outlined),
+            ),
+            if (excede)
+              Tooltip(
                 message:
                     '${mesa.quantidadeConvidados - capacidade!} convidado(s) acima da capacidade informada. Ninguém será removido.',
                 child: const Icon(
                   Icons.warning_amber_rounded,
                   color: Colors.orange,
                 ),
-              )
-            : null,
+              ),
+            const Icon(Icons.expand_more),
+          ],
+        ),
         children: [
           if (excede)
             Container(
@@ -647,8 +891,16 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
           if (mesa.convidados.isEmpty)
             const ListTile(title: Text('Nenhum convidado identificado.'))
           else
-            for (final convidado in mesa.convidados)
-              _construirConvidado(convidado),
+            for (
+              var indiceConvidado = 0;
+              indiceConvidado < mesa.convidados.length;
+              indiceConvidado++
+            )
+              _construirConvidado(
+                mesa.convidados[indiceConvidado],
+                indiceConvidado: indiceConvidado,
+                indiceMesa: indiceMesa,
+              ),
         ],
       ),
     );
@@ -669,13 +921,33 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
           ),
         ),
         children: [
-          for (final convidado in convidados) _construirConvidado(convidado),
+          for (
+            var indiceConvidado = 0;
+            indiceConvidado < convidados.length;
+            indiceConvidado++
+          )
+            _construirConvidado(
+              convidados[indiceConvidado],
+              indiceConvidado: indiceConvidado,
+            ),
         ],
       ),
     );
   }
 
-  Widget _construirConvidado(ConvidadoPreviaImportacao convidado) {
+  Widget _construirConvidado(
+    ConvidadoPreviaImportacao convidado, {
+    required int indiceConvidado,
+    int? indiceMesa,
+  }) {
+    final informacoes = <String>[];
+    if (convidado.leituraComBaixaConfianca) {
+      informacoes.add('Confira este nome');
+    }
+    if (convidado.categoria != CategoriaConvidado.normal) {
+      informacoes.add(convidado.categoria.rotulo);
+    }
+
     return ListTile(
       dense: true,
       leading: Icon(
@@ -685,20 +957,15 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
         color: convidado.leituraComBaixaConfianca ? Colors.orange : null,
       ),
       title: Text(convidado.nomeComDescricao),
-      subtitle: convidado.leituraComBaixaConfianca
-          ? Text(
-              'Leitura com ${(convidado.confianca * 100).round()}% de confiança',
-            )
-          : null,
-      trailing: convidado.categoria == CategoriaConvidado.normal
-          ? null
-          : Chip(
-              visualDensity: VisualDensity.compact,
-              label: Text(
-                convidado.categoria.rotulo,
-                style: const TextStyle(fontSize: 11),
-              ),
-            ),
+      subtitle: informacoes.isEmpty ? null : Text(informacoes.join(' • ')),
+      trailing: IconButton(
+        tooltip: 'Editar nome',
+        onPressed: () => _editarNomeConvidado(
+          indiceConvidado: indiceConvidado,
+          indiceMesa: indiceMesa,
+        ),
+        icon: const Icon(Icons.edit_outlined),
+      ),
     );
   }
 }
@@ -712,19 +979,19 @@ class _AvisoSeguro extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.blue.shade50,
-        border: Border.all(color: Colors.blue.shade200),
+        color: Theme.of(context).colorScheme.primaryContainer,
+        border: Border.all(color: Theme.of(context).colorScheme.primary),
         borderRadius: BorderRadius.circular(12),
       ),
       child: const Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.visibility_outlined, color: Colors.blue),
+          Icon(Icons.fact_check_outlined),
           SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Esta é apenas uma prévia. Nenhuma informação será alterada até '
-              'você revisar e confirmar a importação.',
+              'A IA pode cometer erros. Revise a prévia antes de confirmar; '
+              'nenhuma informação será alterada antes da sua confirmação.',
             ),
           ),
         ],
@@ -855,28 +1122,6 @@ class _CartaoErroPublicacao extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _LinhaInformativa extends StatelessWidget {
-  final IconData icone;
-  final String texto;
-
-  const _LinhaInformativa({required this.icone, required this.texto});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icone, size: 20),
-          const SizedBox(width: 10),
-          Expanded(child: Text(texto)),
-        ],
       ),
     );
   }

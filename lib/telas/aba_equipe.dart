@@ -1,6 +1,12 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import '../servicos/casamento_atual_servico.dart';
 import '../servicos/equipe_servico.dart';
+
+enum _AcaoMembroEquipe { convidar, remover, excluir }
 
 class AbaEquipe extends StatefulWidget {
   const AbaEquipe({super.key});
@@ -58,22 +64,31 @@ class _AbaEquipeState extends State<AbaEquipe> {
 
     _recarregar();
 
+    if (resultado.linkWhatsApp != null &&
+        resultado.telefoneWhatsApp != null &&
+        await _perguntarEnviarWhatsApp()) {
+      await _abrirWhatsApp(
+        telefone: resultado.telefoneWhatsApp!,
+        linkConvite: resultado.linkWhatsApp!,
+      );
+    }
+
     final mensagem = resultado.contaMista
         ? 'Este e-mail já pertencia a um cerimonialista. O perfil de '
               'funcionário foi adicionado à mesma conta, sem alterar a senha.'
         : resultado.notificacaoEnviada
-            ? 'Convite enviado com sucesso. A pessoa receberá o acesso por e-mail.'
-            : resultado.mensagemNotificacao ??
-                  (resultado.conviteEnviado
-                      ? 'A conta foi preparada, mas não foi possível enviar o e-mail.'
-                      : 'O acesso foi liberado, mas não foi possível enviar o e-mail.');
+        ? 'Convite enviado com sucesso. A pessoa receberá o acesso por e-mail.'
+        : resultado.mensagemNotificacao ??
+              (resultado.conviteEnviado
+                  ? 'A conta foi preparada, mas não foi possível enviar o e-mail.'
+                  : 'O acesso foi liberado, mas não foi possível enviar o e-mail.');
 
     await _mostrarMensagem(
       titulo: resultado.contaMista
           ? 'Conta mista criada'
           : resultado.notificacaoEnviada
-              ? 'Convite enviado'
-              : 'Acesso liberado',
+          ? 'Convite enviado'
+          : 'Acesso liberado',
       mensagem: mensagem,
     );
   }
@@ -105,8 +120,7 @@ class _AbaEquipeState extends State<AbaEquipe> {
       if (mounted) {
         await _mostrarMensagem(
           titulo: 'Acesso removido',
-          mensagem:
-              '${membro.nome} não pode mais acessar este casamento.',
+          mensagem: '${membro.nome} não pode mais acessar este casamento.',
         );
       }
     } catch (erro) {
@@ -125,6 +139,15 @@ class _AbaEquipeState extends State<AbaEquipe> {
       _recarregar();
       if (!mounted) return;
 
+      if (resultado.linkWhatsApp != null &&
+          resultado.telefoneWhatsApp != null &&
+          await _perguntarEnviarWhatsApp()) {
+        await _abrirWhatsApp(
+          telefone: resultado.telefoneWhatsApp!,
+          linkConvite: resultado.linkWhatsApp!,
+        );
+      }
+
       await _mostrarMensagem(
         titulo: resultado.notificacaoEnviada
             ? 'Convite enviado'
@@ -133,10 +156,10 @@ class _AbaEquipeState extends State<AbaEquipe> {
             ? '${membro.nome} continuará usando a mesma conta como '
                   'cerimonialista e funcionário.'
             : resultado.notificacaoEnviada
-                ? '${membro.nome} foi convidado e recebeu um e-mail.'
-                : resultado.mensagemNotificacao ??
-                      '${membro.nome} foi incluído neste casamento, mas o '
-                          'e-mail não pôde ser enviado.',
+            ? '${membro.nome} foi convidado e recebeu um e-mail.'
+            : resultado.mensagemNotificacao ??
+                  '${membro.nome} foi incluído neste casamento, mas o '
+                      'e-mail não pôde ser enviado.',
       );
     } catch (erro) {
       if (mounted) {
@@ -145,6 +168,54 @@ class _AbaEquipeState extends State<AbaEquipe> {
           mensagem: erro.toString(),
         );
       }
+    }
+  }
+
+  Future<bool> _perguntarEnviarWhatsApp() async {
+    final enviar = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Enviar também pelo WhatsApp?'),
+        content: const Text(
+          'O convite por e-mail já foi processado. Deseja abrir o WhatsApp '
+          'com a mensagem e o link seguro do convite?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Agora não'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.chat_outlined),
+            label: const Text('Abrir WhatsApp'),
+          ),
+        ],
+      ),
+    );
+    return enviar == true;
+  }
+
+  Future<void> _abrirWhatsApp({
+    required String telefone,
+    required String linkConvite,
+  }) async {
+    final evento =
+        CasamentoAtualServico.instance.casamento?.titulo ?? 'seu evento';
+    final mensagem = Uri.encodeComponent(
+      'Você foi convidado para participar da equipe do evento '
+      '"$evento" no ConfirmaAi.\n\n'
+      'Acesse o convite por este link seguro:\n$linkConvite',
+    );
+    final uri = Uri.parse('https://wa.me/$telefone?text=$mensagem');
+    final abriu = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!abriu && mounted) {
+      await _mostrarMensagem(
+        titulo: 'Não foi possível abrir o WhatsApp',
+        mensagem:
+            'O convite continua disponível por e-mail. Verifique se o '
+            'WhatsApp está instalado neste aparelho.',
+      );
     }
   }
 
@@ -184,6 +255,53 @@ class _AbaEquipeState extends State<AbaEquipe> {
       if (mounted) {
         await _mostrarMensagem(
           titulo: 'Não foi possível excluir',
+          mensagem: erro.toString(),
+        );
+      }
+    }
+  }
+
+  Future<void> _mostrarDetalhesMembro(MembroEquipe membro) async {
+    final resultado = await showDialog<_ResultadoDialogMembro>(
+      context: context,
+      builder: (_) => _DialogMembroEquipe(membro: membro),
+      barrierDismissible: true,
+    );
+
+    if (!mounted || resultado == null) {
+      return;
+    }
+
+    try {
+      if (resultado.salvar) {
+        await _servico.atualizarDadosFuncionario(
+          membro: membro,
+          nome: resultado.nome,
+          email: resultado.email,
+          telefone: _normalizarTelefone(resultado.telefone),
+        );
+        _recarregar();
+      }
+
+      switch (resultado.acao) {
+        case null:
+          if (resultado.salvar && mounted) {
+            await _mostrarMensagem(
+              titulo: 'Dados atualizados',
+              mensagem: 'Os dados de ${resultado.nome} foram atualizados.',
+            );
+          }
+        case _AcaoMembroEquipe.convidar:
+          await _convidarParaEsteCasamento(membro);
+        case _AcaoMembroEquipe.remover:
+          await _desativar(membro);
+        case _AcaoMembroEquipe.excluir:
+          await _removerDaEquipe(membro);
+      }
+    } catch (erro) {
+      if (mounted) {
+        await _mostrarMensagem(
+          titulo: 'Não foi possível atualizar',
           mensagem: erro.toString(),
         );
       }
@@ -256,41 +374,44 @@ class _AbaEquipeState extends State<AbaEquipe> {
                   );
                 }
                 final membro = membros[index - 1];
-                return ListTile(
-                  leading: CircleAvatar(
-                    child: const Icon(Icons.badge_outlined),
-                  ),
-                  title: Text(membro.nome),
-                  subtitle: Text(
-                    '${membro.email ?? 'Funcionário'} • ${_statusDoMembro(membro)}',
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (membro.convidadoParaEsteCasamento)
-                        IconButton(
-                          tooltip: 'Remover acesso deste casamento',
-                          icon: const Icon(Icons.person_remove_outlined),
-                          onPressed: () => _desativar(membro),
-                        )
-                      else
-                        FilledButton(
-                          onPressed: () => _convidarParaEsteCasamento(membro),
-                          child: const Text('Convidar'),
-                        ),
-                      PopupMenuButton<String>(
-                        tooltip: 'Opções do funcionário',
-                        onSelected: (acao) {
-                          if (acao == 'excluir') _removerDaEquipe(membro);
-                        },
-                        itemBuilder: (_) => const [
-                          PopupMenuItem(
-                            value: 'excluir',
-                            child: Text('Excluir da equipe'),
-                          ),
-                        ],
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
+                  child: Card(
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 6,
                       ),
-                    ],
+                      leading: const CircleAvatar(
+                        child: Icon(Icons.badge_outlined),
+                      ),
+                      title: Text(
+                        membro.nome,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      subtitle: Text(
+                        _statusDoMembro(membro),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: _corDoStatus(context, membro),
+                        ),
+                      ),
+                      trailing: IconButton(
+                        tooltip: membro.convidadoParaEsteCasamento
+                            ? 'Remover deste evento'
+                            : 'Convidar para este evento',
+                        icon: Icon(
+                          membro.convidadoParaEsteCasamento
+                              ? Icons.person_remove_outlined
+                              : Icons.person_add_alt_1,
+                        ),
+                        onPressed: membro.convidadoParaEsteCasamento
+                            ? () => _desativar(membro)
+                            : () => _convidarParaEsteCasamento(membro),
+                      ),
+                      onTap: () => _mostrarDetalhesMembro(membro),
+                    ),
                   ),
                 );
               },
@@ -303,9 +424,309 @@ class _AbaEquipeState extends State<AbaEquipe> {
 
   String _statusDoMembro(MembroEquipe membro) {
     if (!membro.convidadoParaEsteCasamento) {
-      return 'sem acesso a este casamento';
+      return 'Não convidado';
     }
-    return membro.conviteAceito ? 'convite aceito' : 'aguardando aceite';
+    return membro.conviteAceito ? 'Aceito' : 'Aguardando aceite';
+  }
+
+  Color _corDoStatus(BuildContext context, MembroEquipe membro) {
+    if (!membro.convidadoParaEsteCasamento) {
+      return Theme.of(context).colorScheme.onSurfaceVariant;
+    }
+    return membro.conviteAceito
+        ? Colors.green.shade700
+        : Theme.of(context).colorScheme.primary;
+  }
+
+  String? _normalizarTelefone(String valor) {
+    final digitos = valor.replaceAll(RegExp(r'\D'), '');
+    if (digitos.isEmpty) return null;
+    final comCodigo = digitos.startsWith('55') ? digitos : '55$digitos';
+    if (comCodigo.length != 12 && comCodigo.length != 13) return null;
+    return comCodigo;
+  }
+}
+
+class _ResultadoDialogMembro {
+  final String nome;
+  final String email;
+  final String telefone;
+  final bool salvar;
+  final _AcaoMembroEquipe? acao;
+
+  const _ResultadoDialogMembro({
+    required this.nome,
+    required this.email,
+    required this.telefone,
+    required this.salvar,
+    required this.acao,
+  });
+}
+
+enum _DecisaoEdicao { salvar, descartar }
+
+class _DialogMembroEquipe extends StatefulWidget {
+  final MembroEquipe membro;
+
+  const _DialogMembroEquipe({required this.membro});
+
+  @override
+  State<_DialogMembroEquipe> createState() => _DialogMembroEquipeState();
+}
+
+class _DialogMembroEquipeState extends State<_DialogMembroEquipe> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _nome;
+  late final TextEditingController _email;
+  late final TextEditingController _telefone;
+  bool _processandoSaida = false;
+
+  MembroEquipe get _membro => widget.membro;
+
+  bool get _possuiAlteracoes =>
+      _nome.text.trim() != _membro.nome.trim() ||
+      _email.text.trim().toLowerCase() !=
+          (_membro.email ?? '').trim().toLowerCase() ||
+      _telefone.text.trim() != (_membro.telefone ?? '').trim();
+
+  @override
+  void initState() {
+    super.initState();
+    _nome = TextEditingController(text: _membro.nome);
+    _email = TextEditingController(text: _membro.email ?? '');
+    _telefone = TextEditingController(text: _membro.telefone ?? '');
+    _nome.addListener(_atualizarEstadoDoFormulario);
+    _email.addListener(_atualizarEstadoDoFormulario);
+    _telefone.addListener(_atualizarEstadoDoFormulario);
+  }
+
+  @override
+  void dispose() {
+    _nome.removeListener(_atualizarEstadoDoFormulario);
+    _email.removeListener(_atualizarEstadoDoFormulario);
+    _telefone.removeListener(_atualizarEstadoDoFormulario);
+    _nome.dispose();
+    _email.dispose();
+    _telefone.dispose();
+    super.dispose();
+  }
+
+  void _atualizarEstadoDoFormulario() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _sair([_AcaoMembroEquipe? acao]) async {
+    if (_processandoSaida) {
+      return;
+    }
+
+    if (!_possuiAlteracoes) {
+      _fechar(salvar: false, acao: acao);
+      return;
+    }
+
+    setState(() => _processandoSaida = true);
+    final decisao = await showDialog<_DecisaoEdicao>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Salvar alterações?'),
+          content: Text(
+            acao == null
+                ? 'Você alterou os dados deste funcionário. Deseja salvar antes de fechar?'
+                : 'Você alterou os dados deste funcionário. Deseja salvar antes de continuar?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Continuar editando'),
+            ),
+            TextButton(
+              onPressed: () =>
+                  Navigator.pop(dialogContext, _DecisaoEdicao.descartar),
+              child: const Text('Descartar'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.pop(dialogContext, _DecisaoEdicao.salvar),
+              child: const Text('Salvar'),
+            ),
+          ],
+        );
+      },
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() => _processandoSaida = false);
+
+    if (decisao == null) {
+      return;
+    }
+    if (decisao == _DecisaoEdicao.salvar &&
+        !(_formKey.currentState?.validate() ?? false)) {
+      return;
+    }
+    _fechar(salvar: decisao == _DecisaoEdicao.salvar, acao: acao);
+  }
+
+  void _fechar({required bool salvar, required _AcaoMembroEquipe? acao}) {
+    Navigator.pop(
+      context,
+      _ResultadoDialogMembro(
+        nome: _nome.text.trim(),
+        email: _email.text.trim(),
+        telefone: _telefone.text.trim(),
+        salvar: salvar,
+        acao: acao,
+      ),
+    );
+  }
+
+  void _salvarEFechar() {
+    if (_formKey.currentState?.validate() != true) {
+      return;
+    }
+    _fechar(salvar: true, acao: null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final alturaMaxima = MediaQuery.sizeOf(context).height * 0.82;
+    return PopScope<void>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) {
+          unawaited(_sair());
+        }
+      },
+      child: Dialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 24),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: alturaMaxima),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(22, 22, 22, 16),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Dados do funcionário',
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                  const SizedBox(height: 18),
+                  TextFormField(
+                    controller: _nome,
+                    autofocus: true,
+                    textCapitalization: TextCapitalization.words,
+                    decoration: const InputDecoration(
+                      labelText: 'Nome',
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (valor) => (valor?.trim().length ?? 0) >= 2
+                        ? null
+                        : 'Informe um nome válido.',
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _email,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(
+                      labelText: 'E-mail',
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (valor) => valor?.trim().contains('@') ?? false
+                        ? null
+                        : 'Informe um e-mail válido.',
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _telefone,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(
+                      labelText: 'WhatsApp (opcional)',
+                      hintText: 'DDD + número',
+                      prefixIcon: Icon(Icons.phone_outlined),
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (valor) {
+                      final telefone = _normalizarTelefone(valor ?? '');
+                      if ((valor ?? '').trim().isEmpty || telefone != null) {
+                        return null;
+                      }
+                      return 'Informe DDD e número válidos.';
+                    },
+                  ),
+                  const SizedBox(height: 14),
+                  InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Status',
+                      border: OutlineInputBorder(),
+                    ),
+                    child: Text(_statusDoMembro(_membro)),
+                  ),
+                  const SizedBox(height: 20),
+                  if (!_membro.convidadoParaEsteCasamento)
+                    FilledButton.icon(
+                      onPressed: _processandoSaida
+                          ? null
+                          : () => _sair(_AcaoMembroEquipe.convidar),
+                      icon: const Icon(Icons.person_add_alt_1),
+                      label: const Text('Convidar para este evento'),
+                    )
+                  else
+                    OutlinedButton.icon(
+                      onPressed: _processandoSaida
+                          ? null
+                          : () => _sair(_AcaoMembroEquipe.remover),
+                      icon: const Icon(Icons.person_remove_outlined),
+                      label: const Text('Remover deste evento'),
+                    ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: _processandoSaida
+                        ? null
+                        : () => _sair(_AcaoMembroEquipe.excluir),
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('Excluir da equipe'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: _processandoSaida
+                        ? null
+                        : _possuiAlteracoes
+                        ? _salvarEFechar
+                        : _sair,
+                    child: Text(
+                      _possuiAlteracoes ? 'Salvar e fechar' : 'Fechar',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _statusDoMembro(MembroEquipe membro) {
+    if (!membro.convidadoParaEsteCasamento) {
+      return 'Não convidado';
+    }
+    return membro.conviteAceito ? 'Aceito' : 'Aguardando aceite';
+  }
+
+  String? _normalizarTelefone(String valor) {
+    final digitos = valor.replaceAll(RegExp(r'\D'), '');
+    if (digitos.isEmpty) return null;
+    final comCodigo = digitos.startsWith('55') ? digitos : '55$digitos';
+    if (comCodigo.length != 12 && comCodigo.length != 13) return null;
+    return comCodigo;
   }
 }
 
@@ -323,12 +744,14 @@ class _DialogConvidarFuncionarioState
   final _formKey = GlobalKey<FormState>();
   final _nome = TextEditingController();
   final _email = TextEditingController();
+  final _telefone = TextEditingController();
   bool _enviando = false;
 
   @override
   void dispose() {
     _nome.dispose();
     _email.dispose();
+    _telefone.dispose();
     super.dispose();
   }
 
@@ -341,6 +764,7 @@ class _DialogConvidarFuncionarioState
       final resultado = await widget.servico.convidarFuncionario(
         nome: _nome.text,
         email: _email.text,
+        telefone: _telefone.text,
       );
       if (mounted) {
         Navigator.pop(context, resultado);
@@ -372,6 +796,7 @@ class _DialogConvidarFuncionarioState
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
+      scrollable: true,
       title: const Text('Adicionar funcionário'),
       content: Form(
         key: _formKey,
@@ -401,8 +826,27 @@ class _DialogConvidarFuncionarioState
                   : 'Informe um e-mail válido.',
             ),
             const SizedBox(height: 12),
+            TextFormField(
+              controller: _telefone,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(
+                labelText: 'WhatsApp (opcional)',
+                hintText: 'DDD + número',
+                prefixIcon: Icon(Icons.phone_outlined),
+                border: OutlineInputBorder(),
+              ),
+              validator: (valor) {
+                final telefone = _normalizarTelefone(valor ?? '');
+                if ((valor ?? '').trim().isEmpty || telefone != null) {
+                  return null;
+                }
+                return 'Informe DDD e número válidos.';
+              },
+            ),
+            const SizedBox(height: 12),
             const Text(
-              'A pessoa entrará na sua equipe e receberá acesso a este casamento.',
+              'O e-mail é obrigatório para criar o acesso. O WhatsApp é '
+              'opcional e abre uma mensagem pronta com o convite.',
             ),
           ],
         ),
@@ -418,5 +862,13 @@ class _DialogConvidarFuncionarioState
         ),
       ],
     );
+  }
+
+  String? _normalizarTelefone(String valor) {
+    final digitos = valor.replaceAll(RegExp(r'\D'), '');
+    if (digitos.isEmpty) return null;
+    final comCodigo = digitos.startsWith('55') ? digitos : '55$digitos';
+    if (comCodigo.length != 12 && comCodigo.length != 13) return null;
+    return comCodigo;
   }
 }

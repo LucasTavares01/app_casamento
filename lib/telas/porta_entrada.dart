@@ -54,6 +54,7 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_concluirLoginGooglePendente());
+      unawaited(_concluirSessaoExistente());
     });
   }
 
@@ -61,6 +62,7 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_concluirLoginGooglePendente());
+      unawaited(_concluirSessaoExistente());
     }
   }
 
@@ -100,6 +102,12 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
     await _concluirSessaoAutenticada();
   }
 
+  Future<void> _concluirSessaoExistente() async {
+    if (_abrindoProximaTela || _processandoRetornoAuth || !mounted) return;
+    if (!SessaoServico.instance.possuiSessaoLocal) return;
+    await _concluirSessaoAutenticada();
+  }
+
   Future<void> _concluirSessaoAutenticada() async {
     if (_abrindoProximaTela || _processandoRetornoAuth || !mounted) return;
     _processandoRetornoAuth = true;
@@ -126,7 +134,9 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
       }
 
       await _sincronizarContaComTentativas(sessao);
-      await _concluirPerfilCerimonialistaGooglePendente();
+      final encerrouFluxoGooglePorContaExistente =
+          await _concluirPerfilCerimonialistaGooglePendente();
+      if (encerrouFluxoGooglePorContaExistente) return;
       if (mounted) _abrirAposAutenticacao();
     } catch (erro, stackTrace) {
       debugPrint('ERRO AO CARREGAR CONTA: $erro');
@@ -196,10 +206,10 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
     }
   }
 
-  Future<void> _concluirPerfilCerimonialistaGooglePendente() async {
+  Future<bool> _concluirPerfilCerimonialistaGooglePendente() async {
     final sessao = SessaoServico.instance;
     if (!await sessao.possuiPerfilCerimonialistaGooglePendente()) {
-      return;
+      return false;
     }
 
     final papeis =
@@ -218,10 +228,10 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
         );
       }
       await sessao.encerrarSessao();
-      return;
+      return true;
     }
 
-    if (!mounted) return;
+    if (!mounted) return true;
 
     await sessao.habilitarPerfilCerimonialista(
       nome: sessao.nomeExibicaoAtual,
@@ -239,6 +249,7 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
             : 'Seu perfil de cerimonialista foi criado com sucesso.',
       );
     }
+    return false;
   }
 
   Future<void> _mostrarMensagem({
@@ -458,14 +469,18 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Icon(
-                      Icons.favorite_rounded,
-                      size: 74,
-                      color: Theme.of(context).colorScheme.primary,
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(22),
+                      child: Image.asset(
+                        'assets/branding/confirmaai_icon.png',
+                        width: 82,
+                        height: 82,
+                        fit: BoxFit.cover,
+                      ),
                     ),
                     const SizedBox(height: 20),
                     const Text(
-                      'Gestão de Casamentos',
+                      'ConfirmaAi',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 26,
