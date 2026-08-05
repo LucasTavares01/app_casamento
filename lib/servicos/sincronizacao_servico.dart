@@ -74,8 +74,7 @@ class _ListaAlteradaDuranteDownloadException implements Exception {
   }
 }
 
-class _PendenciasNaoEnviadasAntesDaAtualizacaoException
-    implements Exception {
+class _PendenciasNaoEnviadasAntesDaAtualizacaoException implements Exception {
   final int quantidade;
   final String detalhes;
 
@@ -208,9 +207,7 @@ class SincronizacaoServico extends ChangeNotifier {
 
       if (resultadoEnvio.comErro > 0) {
         _ultimoErroTecnico = resultadoEnvio.detalhesErros.isNotEmpty
-            ? resultadoEnvio.detalhesErros.join(
-                '\n\n--------------------\n\n',
-              )
+            ? resultadoEnvio.detalhesErros.join('\n\n--------------------\n\n')
             : resultadoEnvio.primeiroErro ??
                   'Uma ou mais alterações locais não puderam ser enviadas.';
 
@@ -348,9 +345,7 @@ class SincronizacaoServico extends ChangeNotifier {
         // escolher manter a remoção, o conflito deixa de estar pendente e o
         // próximo sincronismo remove o convidado. Quando escolher restaurar,
         // o registro oficial volta do Supabase normalmente.
-        await _preservarConvidadosComConflito(
-          conflitosConvidadosRemovidos,
-        );
+        await _preservarConvidadosComConflito(conflitosConvidadosRemovidos);
 
         if (precisaConfirmarVersao) {
           await ControleVersaoListaServico.instance.confirmarVersaoLocal(
@@ -669,13 +664,11 @@ class SincronizacaoServico extends ChangeNotifier {
         dados['sequencia_dispositivo'],
         padrao: 1,
       );
-      final dispositivoId = _primeiroTextoNaoVazio([
-            dados['dispositivo_id'],
-          ]) ??
+      final dispositivoId =
+          _primeiroTextoNaoVazio([dados['dispositivo_id']]) ??
           'conflito-${conflito['id']}';
-      final tipoAcao = _primeiroTextoNaoVazio([
-            dados['tipo_acao'],
-          ]) ??
+      final tipoAcao =
+          _primeiroTextoNaoVazio([dados['tipo_acao']]) ??
           (estadoResultante ? 'confirmou_chegada' : 'removeu_chegada');
       final eventosBaseJson = _converterListaParaJson(dados['eventos_base']);
       final observacao = _lerTextoOpcional(dados['observacao']);
@@ -727,8 +720,7 @@ class SincronizacaoServico extends ChangeNotifier {
       final porId = _banco.select(_banco.mesasLocais)
         ..where(
           (tabela) =>
-              tabela.id.equals(mesaIdAntiga) &
-              tabela.excluido.equals(false),
+              tabela.id.equals(mesaIdAntiga) & tabela.excluido.equals(false),
         );
 
       final mesa = await porId.getSingleOrNull();
@@ -741,8 +733,7 @@ class SincronizacaoServico extends ChangeNotifier {
       final porNumero = _banco.select(_banco.mesasLocais)
         ..where(
           (tabela) =>
-              tabela.numero.equals(mesaNumero) &
-              tabela.excluido.equals(false),
+              tabela.numero.equals(mesaNumero) & tabela.excluido.equals(false),
         )
         ..orderBy([(tabela) => OrderingTerm.asc(tabela.criadoEm)])
         ..limit(1);
@@ -910,6 +901,8 @@ class SincronizacaoServico extends ChangeNotifier {
             ConvidadosLocaisCompanion.insert(
               id: id,
               nome: _lerTextoObrigatorio(registro['nome']),
+              email: Value(_lerTextoOpcional(registro['email'])),
+              whatsapp: Value(_lerTextoOpcional(registro['whatsapp'])),
               mesaId: Value(_lerTextoOpcional(registro['mesa_id'])),
               chegou: Value(_lerBooleano(registro['chegou'], padrao: false)),
               temConflito: Value(

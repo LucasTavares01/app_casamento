@@ -39,6 +39,11 @@ class ConvidadosLocais extends Table {
 
   TextColumn get nome => text()();
 
+  /// Contatos opcionais usados pelos convites online.
+  TextColumn get email => text().nullable()();
+
+  TextColumn get whatsapp => text().nullable()();
+
   TextColumn get mesaId => text().nullable()();
 
   BoolColumn get chegou => boolean().withDefault(const Constant(false))();
@@ -283,5 +288,16 @@ class BancoLocal extends _$BancoLocal {
   BancoLocal() : super(driftDatabase(name: 'app_casamento_offline'));
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+    onCreate: (Migrator migrator) => migrator.createAll(),
+    onUpgrade: (Migrator migrator, int from, int to) async {
+      if (from < 2) {
+        await migrator.addColumn(convidadosLocais, convidadosLocais.email);
+        await migrator.addColumn(convidadosLocais, convidadosLocais.whatsapp);
+      }
+    },
+  );
 }

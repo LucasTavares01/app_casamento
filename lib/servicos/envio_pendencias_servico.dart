@@ -215,17 +215,70 @@ class EnvioPendenciasServico {
     required OperacaoPendenteLocalRegistro operacao,
     required Map<String, dynamic> payload,
   }) async {
-    await _supabase
-        .rpc(
-          'aplicar_operacao_entidade_v2',
-          params: {
-            'p_operacao_id': operacao.id,
-            'p_entidade': entidade,
-            'p_tipo_operacao': operacao.tipoOperacao,
-            'p_payload': payload,
-          },
-        )
-        .timeout(_tempoLimiteRequisicao);
+    try {
+      await _supabase
+          .rpc(
+            'aplicar_operacao_entidade_v2',
+            params: {
+              'p_operacao_id': operacao.id,
+              'p_entidade': entidade,
+              'p_tipo_operacao': operacao.tipoOperacao,
+              'p_payload': payload,
+            },
+          )
+          .timeout(_tempoLimiteRequisicao);
+
+      // A função de conflito pode existir em uma versão antiga no projeto
+      // remoto e confirmar a operação sem conhecer os novos campos de
+      // contato. Reaplicamos somente os dados do convidado por uma operação
+      // protegida por RLS antes de remover a pendência local.
+      if (entidade == 'convidado' && operacao.tipoOperacao == 'atualizar') {
+        await _atualizarContatoConvidadoDiretamente(payload);
+      }
+    } catch (erro) {
+      // A função legada de aplicação das operações pode estar ausente ou
+      // desatualizada em projetos que já tinham dados antes da inclusão de
+      // e-mail e WhatsApp nos convidados. Nesse caso, preservamos o fluxo
+      // offline e usamos a atualização protegida por RLS como fallback.
+      if (entidade != 'convidado' || operacao.tipoOperacao != 'atualizar') {
+        rethrow;
+      }
+
+      try {
+        await _atualizarContatoConvidadoDiretamente(payload);
+      } catch (_) {
+        rethrow;
+      }
+    }
+  }
+
+  Future<void> _atualizarContatoConvidadoDiretamente(
+    Map<String, dynamic> payload,
+  ) async {
+    final id = _lerTextoObrigatorio(payload['id']);
+    final casamentoId = _lerTextoObrigatorio(payload['casamento_id']);
+
+    final resposta = await _supabase
+        .from('convidados')
+        .update({
+          'nome': payload['nome'],
+          'email': payload['email'],
+          'whatsapp': payload['whatsapp'],
+          'mesa_id': payload['mesa_id'],
+          'updated_at': payload['updated_at'],
+          'deleted_at': payload['deleted_at'],
+          'modificado_por_usuario_id': payload['modificado_por_usuario_id'],
+        })
+        .eq('id', id)
+        .eq('casamento_id', casamentoId)
+        .select('id');
+
+    if (resposta.isEmpty) {
+      throw StateError(
+        'O convidado não pôde ser atualizado no servidor. '
+        'A operação continuará pendente.',
+      );
+    }
   }
 
   /// Insere ou atualiza o registro usando o ID criado no celular.
@@ -310,13 +363,9 @@ class EnvioPendenciasServico {
     );
 
     if (conflitoCriado) {
-      await (_banco.update(
-        _banco.convidadosLocais,
-      )..where((tabela) => tabela.id.equals(convidadoId))).write(
-        const ConvidadosLocaisCompanion(
-          temConflito: Value(true),
-        ),
-      );
+      await (_banco.update(_banco.convidadosLocais)
+            ..where((tabela) => tabela.id.equals(convidadoId)))
+          .write(const ConvidadosLocaisCompanion(temConflito: Value(true)));
     }
   }
 

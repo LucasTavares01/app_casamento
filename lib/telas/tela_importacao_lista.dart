@@ -185,41 +185,20 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
     final convidado = indiceMesa == null
         ? resultadoAtual.convidadosSemMesa[indiceConvidado]
         : resultadoAtual.mesas[indiceMesa].convidados[indiceConvidado];
-    final controlador = TextEditingController(text: convidado.nome);
-
-    final novoNome = await showDialog<String>(
+    final valores = await showDialog<Map<String, String>>(
       context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Editar nome do convidado'),
-          content: TextField(
-            controller: controlador,
-            autofocus: true,
-            textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(labelText: 'Nome'),
-            onSubmitted: (valor) => Navigator.pop(dialogContext, valor),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancelar'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, controlador.text),
-              child: const Text('Salvar'),
-            ),
-          ],
-        );
-      },
+      builder: (_) => _DialogEditarConvidado(convidado: convidado),
     );
-    controlador.dispose();
-
-    final nome = novoNome?.trim();
+    final nome = valores?['nome']?.trim();
     if (!mounted || nome == null || nome.isEmpty) {
       return;
     }
 
-    final convidadoAtualizado = convidado.copyWith(nome: nome);
+    final convidadoAtualizado = convidado.copyWith(
+      nome: nome,
+      email: valores?['email'],
+      whatsapp: valores?['whatsapp'],
+    );
     if (indiceMesa == null) {
       final convidados = [...resultadoAtual.convidadosSemMesa];
       convidados[indiceConvidado] = convidadoAtualizado;
@@ -245,36 +224,10 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
     }
 
     final mesa = resultadoAtual.mesas[indiceMesa];
-    final controlador = TextEditingController(text: mesa.detalhe);
     final novoDetalhe = await showDialog<String>(
       context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Editar descrição da mesa'),
-          content: TextField(
-            controller: controlador,
-            autofocus: true,
-            textCapitalization: TextCapitalization.sentences,
-            decoration: const InputDecoration(
-              labelText: 'Descrição',
-              hintText: 'Ex.: Família, amigos, fornecedores…',
-            ),
-            onSubmitted: (valor) => Navigator.pop(dialogContext, valor),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancelar'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, controlador.text),
-              child: const Text('Salvar'),
-            ),
-          ],
-        );
-      },
+      builder: (_) => _DialogEditarDetalheMesa(valorInicial: mesa.detalhe),
     );
-    controlador.dispose();
 
     if (!mounted || novoDetalhe == null) {
       return;
@@ -852,7 +805,10 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
           [
             if (mesa.detalhe.isNotEmpty) mesa.detalhe,
             '${mesa.quantidadeConvidados} convidado(s)',
-            if (capacidade != null) '$capacidade lugar(es)',
+            if (capacidade != null)
+              mesa.capacidadeInferidaAutomaticamente
+                  ? '$capacidade lugar(es) — quantidade identificada'
+                  : '$capacidade lugar(es)',
             if (mesa.numeroGeradoAutomaticamente) 'número automático',
           ].join(' • '),
         ),
@@ -947,6 +903,12 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
     if (convidado.categoria != CategoriaConvidado.normal) {
       informacoes.add(convidado.categoria.rotulo);
     }
+    if (convidado.email?.trim().isNotEmpty == true) {
+      informacoes.add('E-mail: ${convidado.email}');
+    }
+    if (convidado.whatsapp?.trim().isNotEmpty == true) {
+      informacoes.add('WhatsApp: ${convidado.whatsapp}');
+    }
 
     return ListTile(
       dense: true,
@@ -959,13 +921,147 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
       title: Text(convidado.nomeComDescricao),
       subtitle: informacoes.isEmpty ? null : Text(informacoes.join(' • ')),
       trailing: IconButton(
-        tooltip: 'Editar nome',
+        tooltip: 'Editar convidado',
         onPressed: () => _editarNomeConvidado(
           indiceConvidado: indiceConvidado,
           indiceMesa: indiceMesa,
         ),
         icon: const Icon(Icons.edit_outlined),
       ),
+    );
+  }
+}
+
+class _DialogEditarConvidado extends StatefulWidget {
+  const _DialogEditarConvidado({required this.convidado});
+
+  final ConvidadoPreviaImportacao convidado;
+
+  @override
+  State<_DialogEditarConvidado> createState() => _DialogEditarConvidadoState();
+}
+
+class _DialogEditarConvidadoState extends State<_DialogEditarConvidado> {
+  late final TextEditingController _nome;
+  late final TextEditingController _email;
+  late final TextEditingController _whatsapp;
+
+  @override
+  void initState() {
+    super.initState();
+    _nome = TextEditingController(text: widget.convidado.nome);
+    _email = TextEditingController(text: widget.convidado.email ?? '');
+    _whatsapp = TextEditingController(text: widget.convidado.whatsapp ?? '');
+  }
+
+  @override
+  void dispose() {
+    _nome.dispose();
+    _email.dispose();
+    _whatsapp.dispose();
+    super.dispose();
+  }
+
+  void _salvar() {
+    Navigator.of(context).pop({
+      'nome': _nome.text,
+      'email': _email.text,
+      'whatsapp': _whatsapp.text,
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Editar convidado'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _nome,
+              autofocus: true,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(labelText: 'Nome'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _email,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(labelText: 'E-mail'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _whatsapp,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(
+                labelText: 'WhatsApp / telefone',
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(onPressed: _salvar, child: const Text('Salvar')),
+      ],
+    );
+  }
+}
+
+class _DialogEditarDetalheMesa extends StatefulWidget {
+  const _DialogEditarDetalheMesa({required this.valorInicial});
+
+  final String valorInicial;
+
+  @override
+  State<_DialogEditarDetalheMesa> createState() =>
+      _DialogEditarDetalheMesaState();
+}
+
+class _DialogEditarDetalheMesaState extends State<_DialogEditarDetalheMesa> {
+  late final TextEditingController _controlador;
+
+  @override
+  void initState() {
+    super.initState();
+    _controlador = TextEditingController(text: widget.valorInicial);
+  }
+
+  @override
+  void dispose() {
+    _controlador.dispose();
+    super.dispose();
+  }
+
+  void _salvar() {
+    Navigator.of(context).pop(_controlador.text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Editar descrição da mesa'),
+      content: TextField(
+        controller: _controlador,
+        autofocus: true,
+        textCapitalization: TextCapitalization.sentences,
+        decoration: const InputDecoration(
+          labelText: 'Descrição',
+          hintText: 'Ex.: Família, amigos, fornecedores…',
+        ),
+        onSubmitted: (_) => _salvar(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(onPressed: _salvar, child: const Text('Salvar')),
+      ],
     );
   }
 }

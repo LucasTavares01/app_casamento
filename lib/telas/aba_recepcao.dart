@@ -1,9 +1,58 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../modelos/modelos.dart';
 import '../servicos/casamento_atual_servico.dart';
 import '../servicos/supabase_servico.dart';
 import 'tela_conflitos.dart';
+import 'tela_convites_online.dart';
+
+/// Mantém uma única leitura da origem e repete o último valor para cada nova
+/// montagem da aba. Isso evita tanto listeners duplicados quanto carregamento
+/// infinito quando o TabBarView remonta a Recepção.
+class _StreamComUltimoValor<T> {
+  final StreamController<T> _controlador;
+  late final StreamSubscription<T> _assinatura;
+  T? _ultimoValor;
+  bool _temUltimoValor = false;
+  bool _encerrado = false;
+
+  _StreamComUltimoValor(Stream<T> origem)
+    : _controlador = StreamController<T>.broadcast(sync: true) {
+    _controlador.onListen = () {
+      if (_temUltimoValor && !_encerrado) {
+        _controlador.add(_ultimoValor as T);
+      }
+    };
+
+    _assinatura = origem.listen(
+      (valor) {
+        _ultimoValor = valor;
+        _temUltimoValor = true;
+        if (_controlador.hasListener && !_encerrado) {
+          _controlador.add(valor);
+        }
+      },
+      onError: (Object erro, StackTrace stackTrace) {
+        if (_controlador.hasListener && !_encerrado) {
+          _controlador.addError(erro, stackTrace);
+        }
+      },
+    );
+  }
+
+  Stream<T> get stream => _controlador.stream;
+
+  Future<void> dispose() async {
+    if (_encerrado) {
+      return;
+    }
+    _encerrado = true;
+    await _assinatura.cancel();
+    await _controlador.close();
+  }
+}
 
 class _AlertaConvidadoSincronizacao {
   final String id;
@@ -31,12 +80,14 @@ class AbaRecepcao extends StatefulWidget {
 class _AbaRecepcaoState extends State<AbaRecepcao> {
   final SupabaseServico _servico = SupabaseServico();
 
-  late final Stream<List<Mesa>> _streamMesas;
-  late final Stream<List<Convidado>> _streamConvidados;
-  late final Stream<List<UsuarioApp>> _streamUsuarios;
-  late final Stream<List<EventoCheckin>> _streamEventos;
-  late final Stream<List<ConflitoSincronizacao>> _streamConflitos;
-  late final Stream<List<ErroSincronizacaoLocal>> _streamErrosSincronizacao;
+  late final _StreamComUltimoValor<List<Mesa>> _streamMesas;
+  late final _StreamComUltimoValor<List<Convidado>> _streamConvidados;
+  late final _StreamComUltimoValor<List<UsuarioApp>> _streamUsuarios;
+  late final _StreamComUltimoValor<List<EventoCheckin>> _streamEventos;
+  late final _StreamComUltimoValor<List<ConflitoSincronizacao>>
+  _streamConflitos;
+  late final _StreamComUltimoValor<List<ErroSincronizacaoLocal>>
+  _streamErrosSincronizacao;
 
   String _textoBusca = '';
   String? _mesaFiltroId;
@@ -63,18 +114,28 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
   void initState() {
     super.initState();
 
-    _streamMesas = _servico.listarMesas();
-    _streamConvidados = _servico.listarConvidados();
-    _streamUsuarios = _servico.listarUsuariosApp();
-    _streamEventos = _servico.listarEventosCheckin();
-    _streamConflitos = _servico.listarConflitosPendentes();
-    _streamErrosSincronizacao = _servico.listarErrosSincronizacaoLocais();
+    _streamMesas = _StreamComUltimoValor(_servico.listarMesas());
+    _streamConvidados = _StreamComUltimoValor(_servico.listarConvidados());
+    _streamUsuarios = _StreamComUltimoValor(_servico.listarUsuariosApp());
+    _streamEventos = _StreamComUltimoValor(_servico.listarEventosCheckin());
+    _streamConflitos = _StreamComUltimoValor(
+      _servico.listarConflitosPendentes(),
+    );
+    _streamErrosSincronizacao = _StreamComUltimoValor(
+      _servico.listarErrosSincronizacaoLocais(),
+    );
   }
 
   @override
   void dispose() {
     _controladorBusca.dispose();
     _focoBusca.dispose();
+    unawaited(_streamMesas.dispose());
+    unawaited(_streamConvidados.dispose());
+    unawaited(_streamUsuarios.dispose());
+    unawaited(_streamEventos.dispose());
+    unawaited(_streamConflitos.dispose());
+    unawaited(_streamErrosSincronizacao.dispose());
     super.dispose();
   }
 
@@ -493,7 +554,7 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                     Text(
                       somenteLeitura
                           ? 'Este casamento foi encerrado; nenhuma alteração '
-                              'pode ser registrada.'
+                                'pode ser registrada.'
                           : alerta.mensagem,
                       style: TextStyle(
                         color: Colors.red.shade900,
@@ -813,10 +874,9 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _conteudoRecepcao() {
     return StreamBuilder<List<Mesa>>(
-      stream: _streamMesas,
+      stream: _streamMesas.stream,
       builder: (context, snapMesas) {
         if (snapMesas.hasError) {
           return Center(
@@ -831,7 +891,7 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
         final mesas = snapMesas.data!;
 
         return StreamBuilder<List<UsuarioApp>>(
-          stream: _streamUsuarios,
+          stream: _streamUsuarios.stream,
           builder: (context, snapUsuarios) {
             if (snapUsuarios.hasError) {
               return Center(
@@ -850,7 +910,7 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
             };
 
             return StreamBuilder<List<EventoCheckin>>(
-              stream: _streamEventos,
+              stream: _streamEventos.stream,
               builder: (context, snapEventos) {
                 if (snapEventos.hasError) {
                   return Center(
@@ -867,7 +927,7 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                 final todosEventos = snapEventos.data!;
 
                 return StreamBuilder<List<Convidado>>(
-                  stream: _streamConvidados,
+                  stream: _streamConvidados.stream,
                   builder: (context, snapConvidados) {
                     if (snapConvidados.hasError) {
                       return Center(
@@ -885,13 +945,13 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                     final todosConvidados = snapConvidados.data!;
 
                     return StreamBuilder<List<ConflitoSincronizacao>>(
-                      stream: _streamConflitos,
+                      stream: _streamConflitos.stream,
                       builder: (context, snapConflitos) {
                         final conflitos =
                             snapConflitos.data ?? <ConflitoSincronizacao>[];
 
                         return StreamBuilder<List<ErroSincronizacaoLocal>>(
-                          stream: _streamErrosSincronizacao,
+                          stream: _streamErrosSincronizacao.stream,
                           builder: (context, snapErros) {
                             final erros =
                                 snapErros.data ?? <ErroSincronizacaoLocal>[];
@@ -1091,6 +1151,34 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
           },
         );
       },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Column(
+        children: [
+          const TabBar(
+            tabs: [
+              Tab(text: 'RECEPÇÃO', icon: Icon(Icons.how_to_reg)),
+              Tab(
+                text: 'CONVITES ONLINE',
+                icon: Icon(Icons.mark_email_unread_outlined),
+              ),
+            ],
+          ),
+          Expanded(
+            child: TabBarView(
+              children: [
+                _conteudoRecepcao(),
+                const TelaConvitesOnline(mostrarAppBar: false),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

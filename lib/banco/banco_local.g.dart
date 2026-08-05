@@ -446,6 +446,26 @@ class $ConvidadosLocaisTable extends ConvidadosLocais
     type: DriftSqlType.string,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _emailMeta = const VerificationMeta('email');
+  @override
+  late final GeneratedColumn<String> email = GeneratedColumn<String>(
+    'email',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _whatsappMeta = const VerificationMeta(
+    'whatsapp',
+  );
+  @override
+  late final GeneratedColumn<String> whatsapp = GeneratedColumn<String>(
+    'whatsapp',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _mesaIdMeta = const VerificationMeta('mesaId');
   @override
   late final GeneratedColumn<String> mesaId = GeneratedColumn<String>(
@@ -537,6 +557,8 @@ class $ConvidadosLocaisTable extends ConvidadosLocais
   List<GeneratedColumn> get $columns => [
     id,
     nome,
+    email,
+    whatsapp,
     mesaId,
     chegou,
     temConflito,
@@ -569,6 +591,18 @@ class $ConvidadosLocaisTable extends ConvidadosLocais
       );
     } else if (isInserting) {
       context.missing(_nomeMeta);
+    }
+    if (data.containsKey('email')) {
+      context.handle(
+        _emailMeta,
+        email.isAcceptableOrUnknown(data['email']!, _emailMeta),
+      );
+    }
+    if (data.containsKey('whatsapp')) {
+      context.handle(
+        _whatsappMeta,
+        whatsapp.isAcceptableOrUnknown(data['whatsapp']!, _whatsappMeta),
+      );
     }
     if (data.containsKey('mesa_id')) {
       context.handle(
@@ -642,6 +676,14 @@ class $ConvidadosLocaisTable extends ConvidadosLocais
         DriftSqlType.string,
         data['${effectivePrefix}nome'],
       )!,
+      email: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}email'],
+      ),
+      whatsapp: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}whatsapp'],
+      ),
       mesaId: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}mesa_id'],
@@ -683,6 +725,10 @@ class ConvidadoLocalRegistro extends DataClass
     implements Insertable<ConvidadoLocalRegistro> {
   final String id;
   final String nome;
+
+  /// Contatos opcionais usados pelos convites online.
+  final String? email;
+  final String? whatsapp;
   final String? mesaId;
   final bool chegou;
 
@@ -700,6 +746,8 @@ class ConvidadoLocalRegistro extends DataClass
   const ConvidadoLocalRegistro({
     required this.id,
     required this.nome,
+    this.email,
+    this.whatsapp,
     this.mesaId,
     required this.chegou,
     required this.temConflito,
@@ -713,6 +761,12 @@ class ConvidadoLocalRegistro extends DataClass
     final map = <String, Expression>{};
     map['id'] = Variable<String>(id);
     map['nome'] = Variable<String>(nome);
+    if (!nullToAbsent || email != null) {
+      map['email'] = Variable<String>(email);
+    }
+    if (!nullToAbsent || whatsapp != null) {
+      map['whatsapp'] = Variable<String>(whatsapp);
+    }
     if (!nullToAbsent || mesaId != null) {
       map['mesa_id'] = Variable<String>(mesaId);
     }
@@ -729,6 +783,12 @@ class ConvidadoLocalRegistro extends DataClass
     return ConvidadosLocaisCompanion(
       id: Value(id),
       nome: Value(nome),
+      email: email == null && nullToAbsent
+          ? const Value.absent()
+          : Value(email),
+      whatsapp: whatsapp == null && nullToAbsent
+          ? const Value.absent()
+          : Value(whatsapp),
       mesaId: mesaId == null && nullToAbsent
           ? const Value.absent()
           : Value(mesaId),
@@ -749,6 +809,8 @@ class ConvidadoLocalRegistro extends DataClass
     return ConvidadoLocalRegistro(
       id: serializer.fromJson<String>(json['id']),
       nome: serializer.fromJson<String>(json['nome']),
+      email: serializer.fromJson<String?>(json['email']),
+      whatsapp: serializer.fromJson<String?>(json['whatsapp']),
       mesaId: serializer.fromJson<String?>(json['mesaId']),
       chegou: serializer.fromJson<bool>(json['chegou']),
       temConflito: serializer.fromJson<bool>(json['temConflito']),
@@ -764,6 +826,8 @@ class ConvidadoLocalRegistro extends DataClass
     return <String, dynamic>{
       'id': serializer.toJson<String>(id),
       'nome': serializer.toJson<String>(nome),
+      'email': serializer.toJson<String?>(email),
+      'whatsapp': serializer.toJson<String?>(whatsapp),
       'mesaId': serializer.toJson<String?>(mesaId),
       'chegou': serializer.toJson<bool>(chegou),
       'temConflito': serializer.toJson<bool>(temConflito),
@@ -777,6 +841,8 @@ class ConvidadoLocalRegistro extends DataClass
   ConvidadoLocalRegistro copyWith({
     String? id,
     String? nome,
+    Value<String?> email = const Value.absent(),
+    Value<String?> whatsapp = const Value.absent(),
     Value<String?> mesaId = const Value.absent(),
     bool? chegou,
     bool? temConflito,
@@ -787,6 +853,8 @@ class ConvidadoLocalRegistro extends DataClass
   }) => ConvidadoLocalRegistro(
     id: id ?? this.id,
     nome: nome ?? this.nome,
+    email: email.present ? email.value : this.email,
+    whatsapp: whatsapp.present ? whatsapp.value : this.whatsapp,
     mesaId: mesaId.present ? mesaId.value : this.mesaId,
     chegou: chegou ?? this.chegou,
     temConflito: temConflito ?? this.temConflito,
@@ -799,6 +867,8 @@ class ConvidadoLocalRegistro extends DataClass
     return ConvidadoLocalRegistro(
       id: data.id.present ? data.id.value : this.id,
       nome: data.nome.present ? data.nome.value : this.nome,
+      email: data.email.present ? data.email.value : this.email,
+      whatsapp: data.whatsapp.present ? data.whatsapp.value : this.whatsapp,
       mesaId: data.mesaId.present ? data.mesaId.value : this.mesaId,
       chegou: data.chegou.present ? data.chegou.value : this.chegou,
       temConflito: data.temConflito.present
@@ -820,6 +890,8 @@ class ConvidadoLocalRegistro extends DataClass
     return (StringBuffer('ConvidadoLocalRegistro(')
           ..write('id: $id, ')
           ..write('nome: $nome, ')
+          ..write('email: $email, ')
+          ..write('whatsapp: $whatsapp, ')
           ..write('mesaId: $mesaId, ')
           ..write('chegou: $chegou, ')
           ..write('temConflito: $temConflito, ')
@@ -835,6 +907,8 @@ class ConvidadoLocalRegistro extends DataClass
   int get hashCode => Object.hash(
     id,
     nome,
+    email,
+    whatsapp,
     mesaId,
     chegou,
     temConflito,
@@ -849,6 +923,8 @@ class ConvidadoLocalRegistro extends DataClass
       (other is ConvidadoLocalRegistro &&
           other.id == this.id &&
           other.nome == this.nome &&
+          other.email == this.email &&
+          other.whatsapp == this.whatsapp &&
           other.mesaId == this.mesaId &&
           other.chegou == this.chegou &&
           other.temConflito == this.temConflito &&
@@ -862,6 +938,8 @@ class ConvidadosLocaisCompanion
     extends UpdateCompanion<ConvidadoLocalRegistro> {
   final Value<String> id;
   final Value<String> nome;
+  final Value<String?> email;
+  final Value<String?> whatsapp;
   final Value<String?> mesaId;
   final Value<bool> chegou;
   final Value<bool> temConflito;
@@ -873,6 +951,8 @@ class ConvidadosLocaisCompanion
   const ConvidadosLocaisCompanion({
     this.id = const Value.absent(),
     this.nome = const Value.absent(),
+    this.email = const Value.absent(),
+    this.whatsapp = const Value.absent(),
     this.mesaId = const Value.absent(),
     this.chegou = const Value.absent(),
     this.temConflito = const Value.absent(),
@@ -885,6 +965,8 @@ class ConvidadosLocaisCompanion
   ConvidadosLocaisCompanion.insert({
     required String id,
     required String nome,
+    this.email = const Value.absent(),
+    this.whatsapp = const Value.absent(),
     this.mesaId = const Value.absent(),
     this.chegou = const Value.absent(),
     this.temConflito = const Value.absent(),
@@ -900,6 +982,8 @@ class ConvidadosLocaisCompanion
   static Insertable<ConvidadoLocalRegistro> custom({
     Expression<String>? id,
     Expression<String>? nome,
+    Expression<String>? email,
+    Expression<String>? whatsapp,
     Expression<String>? mesaId,
     Expression<bool>? chegou,
     Expression<bool>? temConflito,
@@ -912,6 +996,8 @@ class ConvidadosLocaisCompanion
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (nome != null) 'nome': nome,
+      if (email != null) 'email': email,
+      if (whatsapp != null) 'whatsapp': whatsapp,
       if (mesaId != null) 'mesa_id': mesaId,
       if (chegou != null) 'chegou': chegou,
       if (temConflito != null) 'tem_conflito': temConflito,
@@ -926,6 +1012,8 @@ class ConvidadosLocaisCompanion
   ConvidadosLocaisCompanion copyWith({
     Value<String>? id,
     Value<String>? nome,
+    Value<String?>? email,
+    Value<String?>? whatsapp,
     Value<String?>? mesaId,
     Value<bool>? chegou,
     Value<bool>? temConflito,
@@ -938,6 +1026,8 @@ class ConvidadosLocaisCompanion
     return ConvidadosLocaisCompanion(
       id: id ?? this.id,
       nome: nome ?? this.nome,
+      email: email ?? this.email,
+      whatsapp: whatsapp ?? this.whatsapp,
       mesaId: mesaId ?? this.mesaId,
       chegou: chegou ?? this.chegou,
       temConflito: temConflito ?? this.temConflito,
@@ -957,6 +1047,12 @@ class ConvidadosLocaisCompanion
     }
     if (nome.present) {
       map['nome'] = Variable<String>(nome.value);
+    }
+    if (email.present) {
+      map['email'] = Variable<String>(email.value);
+    }
+    if (whatsapp.present) {
+      map['whatsapp'] = Variable<String>(whatsapp.value);
     }
     if (mesaId.present) {
       map['mesa_id'] = Variable<String>(mesaId.value);
@@ -990,6 +1086,8 @@ class ConvidadosLocaisCompanion
     return (StringBuffer('ConvidadosLocaisCompanion(')
           ..write('id: $id, ')
           ..write('nome: $nome, ')
+          ..write('email: $email, ')
+          ..write('whatsapp: $whatsapp, ')
           ..write('mesaId: $mesaId, ')
           ..write('chegou: $chegou, ')
           ..write('temConflito: $temConflito, ')
@@ -4579,6 +4677,8 @@ typedef $$ConvidadosLocaisTableCreateCompanionBuilder =
     ConvidadosLocaisCompanion Function({
       required String id,
       required String nome,
+      Value<String?> email,
+      Value<String?> whatsapp,
       Value<String?> mesaId,
       Value<bool> chegou,
       Value<bool> temConflito,
@@ -4592,6 +4692,8 @@ typedef $$ConvidadosLocaisTableUpdateCompanionBuilder =
     ConvidadosLocaisCompanion Function({
       Value<String> id,
       Value<String> nome,
+      Value<String?> email,
+      Value<String?> whatsapp,
       Value<String?> mesaId,
       Value<bool> chegou,
       Value<bool> temConflito,
@@ -4618,6 +4720,16 @@ class $$ConvidadosLocaisTableFilterComposer
 
   ColumnFilters<String> get nome => $composableBuilder(
     column: $table.nome,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get email => $composableBuilder(
+    column: $table.email,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get whatsapp => $composableBuilder(
+    column: $table.whatsapp,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -4676,6 +4788,16 @@ class $$ConvidadosLocaisTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get email => $composableBuilder(
+    column: $table.email,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get whatsapp => $composableBuilder(
+    column: $table.whatsapp,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get mesaId => $composableBuilder(
     column: $table.mesaId,
     builder: (column) => ColumnOrderings(column),
@@ -4726,6 +4848,12 @@ class $$ConvidadosLocaisTableAnnotationComposer
 
   GeneratedColumn<String> get nome =>
       $composableBuilder(column: $table.nome, builder: (column) => column);
+
+  GeneratedColumn<String> get email =>
+      $composableBuilder(column: $table.email, builder: (column) => column);
+
+  GeneratedColumn<String> get whatsapp =>
+      $composableBuilder(column: $table.whatsapp, builder: (column) => column);
 
   GeneratedColumn<String> get mesaId =>
       $composableBuilder(column: $table.mesaId, builder: (column) => column);
@@ -4794,6 +4922,8 @@ class $$ConvidadosLocaisTableTableManager
               ({
                 Value<String> id = const Value.absent(),
                 Value<String> nome = const Value.absent(),
+                Value<String?> email = const Value.absent(),
+                Value<String?> whatsapp = const Value.absent(),
                 Value<String?> mesaId = const Value.absent(),
                 Value<bool> chegou = const Value.absent(),
                 Value<bool> temConflito = const Value.absent(),
@@ -4805,6 +4935,8 @@ class $$ConvidadosLocaisTableTableManager
               }) => ConvidadosLocaisCompanion(
                 id: id,
                 nome: nome,
+                email: email,
+                whatsapp: whatsapp,
                 mesaId: mesaId,
                 chegou: chegou,
                 temConflito: temConflito,
@@ -4818,6 +4950,8 @@ class $$ConvidadosLocaisTableTableManager
               ({
                 required String id,
                 required String nome,
+                Value<String?> email = const Value.absent(),
+                Value<String?> whatsapp = const Value.absent(),
                 Value<String?> mesaId = const Value.absent(),
                 Value<bool> chegou = const Value.absent(),
                 Value<bool> temConflito = const Value.absent(),
@@ -4829,6 +4963,8 @@ class $$ConvidadosLocaisTableTableManager
               }) => ConvidadosLocaisCompanion.insert(
                 id: id,
                 nome: nome,
+                email: email,
+                whatsapp: whatsapp,
                 mesaId: mesaId,
                 chegou: chegou,
                 temConflito: temConflito,

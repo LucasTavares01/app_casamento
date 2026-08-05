@@ -18,10 +18,7 @@ Future<CasamentoAtual?> mostrarDialogoEdicaoEvento({
 }) {
   return showDialog<CasamentoAtual>(
     context: context,
-    builder: (_) => _DialogNovoCasamento(
-      servico: servico,
-      existente: evento,
-    ),
+    builder: (_) => _DialogNovoCasamento(servico: servico, existente: evento),
   );
 }
 
@@ -141,9 +138,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
           }
         });
         if (deveAbrirComoFuncionario && papeis.funcionario) {
-          unawaited(
-            SessaoServico.instance.consumirAberturaComoFuncionario(),
-          );
+          unawaited(SessaoServico.instance.consumirAberturaComoFuncionario());
         }
       }
     } catch (_) {
@@ -260,7 +255,10 @@ class _TelaCasamentosState extends State<TelaCasamentos>
     unawaited(_carregarPermissao());
   }
 
-  Future<void> _abrir(CasamentoAtual casamento) async {
+  Future<void> _abrir(
+    CasamentoAtual casamento, {
+    bool abrirCadastros = false,
+  }) async {
     try {
       await _casamentos.selecionar(casamento);
       if (!mounted) return;
@@ -268,6 +266,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
         MaterialPageRoute(
           builder: (_) => TelaPrincipal(
             somenteLeituraInicial: casamento.encerrado,
+            abaInicial: abrirCadastros && casamento.ehAdmin ? 2 : 0,
           ),
         ),
       );
@@ -282,17 +281,15 @@ class _TelaCasamentosState extends State<TelaCasamentos>
       builder: (_) => _DialogNovoCasamento(servico: _casamentos),
     );
     if (criado == null || !mounted) return;
-    await _abrir(criado);
+    await _abrir(criado, abrirCadastros: true);
   }
 
   Future<void> _editarCasamento(CasamentoAtual casamento) async {
     if (!casamento.ehAdmin || casamento.encerrado) return;
     await showDialog<CasamentoAtual>(
       context: context,
-      builder: (_) => _DialogNovoCasamento(
-        servico: _casamentos,
-        existente: casamento,
-      ),
+      builder: (_) =>
+          _DialogNovoCasamento(servico: _casamentos, existente: casamento),
     );
     if (mounted) _recarregar();
   }
@@ -484,13 +481,9 @@ class _TelaCasamentosState extends State<TelaCasamentos>
         ),
         actions: [
           IconButton(
-            tooltip: _mostrarPesquisa
-                ? 'Fechar pesquisa'
-                : 'Pesquisar eventos',
+            tooltip: _mostrarPesquisa ? 'Fechar pesquisa' : 'Pesquisar eventos',
             onPressed: _mostrarPesquisa ? _fecharPesquisa : _abrirPesquisa,
-            icon: Icon(
-              _mostrarPesquisa ? Icons.close : Icons.search,
-            ),
+            icon: Icon(_mostrarPesquisa ? Icons.close : Icons.search),
           ),
           IconButton(
             tooltip: 'Configurações da conta',
@@ -591,7 +584,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
                 ),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: TabBar(
+                child: TabBar(
                   controller: _abasController,
                   indicatorSize: TabBarIndicatorSize.tab,
                   indicatorWeight: 3,
@@ -646,8 +639,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
   }
 
   bool _estaFinalizadoNaVisao(CasamentoAtual casamento) {
-    return casamento.status == 'arquivado' ||
-        casamento.status == 'finalizado';
+    return casamento.status == 'arquivado' || casamento.status == 'finalizado';
   }
 
   List<CasamentoAtual> _filtrarCasamentos(List<CasamentoAtual> casamentos) {
@@ -824,7 +816,9 @@ class _CardCasamento extends StatelessWidget {
               if (casamento.descricaoPessoas.isNotEmpty) ...[
                 const SizedBox(height: 9),
                 _InfoCasamento(
-                  rotulo: casamento.rotuloPessoas ?? casamento.tipoEvento.rotuloPessoa,
+                  rotulo:
+                      casamento.rotuloPessoas ??
+                      casamento.tipoEvento.rotuloPessoa,
                   valor: casamento.descricaoPessoas,
                   icone: Icons.person_outline,
                 ),
@@ -1140,10 +1134,10 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
   void initState() {
     super.initState();
     final existente = widget.existente;
-    final nomesAntigos = [existente?.nomePessoa1, existente?.nomePessoa2]
-        .whereType<String>()
-        .where((nome) => nome.trim().isNotEmpty)
-        .join(' e ');
+    final nomesAntigos = [
+      existente?.nomePessoa1,
+      existente?.nomePessoa2,
+    ].whereType<String>().where((nome) => nome.trim().isNotEmpty).join(' e ');
     _titulo = TextEditingController(text: existente?.titulo ?? '');
     _pessoas = TextEditingController(text: nomesAntigos);
     _local = TextEditingController(text: existente?.localEvento ?? '');
@@ -1190,9 +1184,9 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
   }
 
   Widget _construirDialogoLocalizado(BuildContext context, Widget? child) {
-    final dadosTela = MediaQuery.of(context).copyWith(
-      alwaysUse24HourFormat: true,
-    );
+    final dadosTela = MediaQuery.of(
+      context,
+    ).copyWith(alwaysUse24HourFormat: true);
     return MediaQuery(
       data: dadosTela,
       child: Localizations.override(
@@ -1377,7 +1371,13 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
         ),
         ElevatedButton(
           onPressed: _salvando ? null : _salvar,
-          child: Text(_salvando ? 'Salvando...' : _editando ? 'Salvar' : 'Criar'),
+          child: Text(
+            _salvando
+                ? 'Salvando...'
+                : _editando
+                ? 'Salvar'
+                : 'Criar',
+          ),
         ),
       ],
     );

@@ -154,7 +154,7 @@ class ImportacaoListaServico {
         );
       }
 
-      return _normalizarMesasSemNumero(
+      return _normalizarResultado(
         ResultadoPreviaImportacao.fromJson(
           Map<String, dynamic>.from(resultadoBruto),
         ),
@@ -186,7 +186,7 @@ class ImportacaoListaServico {
     }
   }
 
-  ResultadoPreviaImportacao _normalizarMesasSemNumero(
+  ResultadoPreviaImportacao _normalizarResultado(
     ResultadoPreviaImportacao resultado,
   ) {
     final numerosUsados = resultado.mesas
@@ -200,7 +200,8 @@ class ImportacaoListaServico {
         .toList();
     final mesas = <MesaPreviaImportacao>[];
 
-    for (final mesa in resultado.mesas) {
+    for (final mesaOriginal in resultado.mesas) {
+      final mesa = mesaOriginal;
       final numeroAtual = mesa.numero;
       if (numeroAtual != null && numeroAtual >= 0) {
         mesas.add(mesa);

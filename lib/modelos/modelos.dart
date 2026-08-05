@@ -25,6 +25,8 @@ class Mesa {
 class Convidado {
   final String id;
   final String nome;
+  final String? email;
+  final String? whatsapp;
   final String? mesaId;
   final bool chegou;
 
@@ -44,6 +46,8 @@ class Convidado {
   Convidado({
     required this.id,
     required this.nome,
+    this.email,
+    this.whatsapp,
     this.mesaId,
     required this.chegou,
     this.temConflito = false,
@@ -54,6 +58,8 @@ class Convidado {
     return Convidado(
       id: map['id']?.toString() ?? '',
       nome: map['nome']?.toString() ?? '',
+      email: _textoOpcional(map['email']),
+      whatsapp: _textoOpcional(map['whatsapp']),
       mesaId: map['mesa_id']?.toString(),
       chegou: _converterBooleano(map['chegou']),
       temConflito: _converterBooleano(map['tem_conflito']),
@@ -449,6 +455,14 @@ bool _converterBooleano(dynamic valor) {
   final texto = valor?.toString().toLowerCase();
 
   return texto == 'true' || texto == '1';
+}
+
+String? _textoOpcional(dynamic valor) {
+  final texto = valor?.toString().trim();
+  if (texto == null || texto.isEmpty || texto.toLowerCase() == 'null') {
+    return null;
+  }
+  return texto;
 }
 
 List<String> _converterListaDeIds(dynamic valor) {

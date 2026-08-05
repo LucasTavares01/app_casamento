@@ -1,5 +1,4 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import * as XLSX from "npm:xlsx@0.18.5";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -39,6 +38,16 @@ const guestSchema = {
       description:
         "Observação curta e útil inferida do próprio arquivo. Pode representar qualquer condição, relação, restrição, pagamento, faixa etária, acessibilidade ou outra anotação relevante. Não use significados fixos para cores ou símbolos. Use string vazia quando não houver.",
     },
+    email: {
+      type: "string",
+      description:
+        "Endereço de e-mail escrito junto ao convidado, ou string vazia quando não houver.",
+    },
+    whatsapp: {
+      type: "string",
+      description:
+        "Número de telefone ou WhatsApp escrito junto ao convidado, preservando DDD, ou string vazia quando não houver.",
+    },
     categoria: {
       type: "string",
       enum: ["normal", "outra"],
@@ -52,7 +61,14 @@ const guestSchema = {
       description: "Confiança de leitura do nome, de 0 a 1.",
     },
   },
-  required: ["nome", "descricao", "categoria", "confianca"],
+  required: [
+    "nome",
+    "descricao",
+    "email",
+    "whatsapp",
+    "categoria",
+    "confianca",
+  ],
 };
 
 const previewSchema = {
@@ -77,7 +93,12 @@ const previewSchema = {
             type: "integer",
             minimum: -1,
             description:
-              "Quantidade declarada de lugares; use -1 quando ausente.",
+              "Quantidade de lugares somente quando estiver escrita de forma explícita no arquivo; use -1 quando ausente. Nunca calcule pela quantidade de convidados.",
+          },
+          capacidade_inferida_automaticamente: {
+            type: "boolean",
+            description:
+              "Mantenha false. A capacidade ausente não deve ser inferida automaticamente.",
           },
           convidados: { type: "array", items: guestSchema },
         },
@@ -86,6 +107,7 @@ const previewSchema = {
           "nome_exibicao",
           "detalhe",
           "capacidade",
+          "capacidade_inferida_automaticamente",
           "convidados",
         ],
       },
@@ -327,7 +349,7 @@ async function buildGeminiFilePart(input: {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
     input.mimeType === "application/vnd.ms-excel"
   ) {
-    extractedText = extractWorkbookText(bytes);
+    extractedText = await extractWorkbookText(bytes);
   } else {
     extractedText = new TextDecoder("utf-8").decode(bytes).replace(/^\uFEFF/, "");
   }
@@ -348,33 +370,45 @@ async function buildGeminiFilePart(input: {
   };
 }
 
-function extractWorkbookText(bytes: Uint8Array): string {
-  const workbook = XLSX.read(bytes, {
-    type: "array",
-    raw: false,
-    cellDates: false,
-  });
-
-  const sections: string[] = [];
-
-  for (const sheetName of workbook.SheetNames) {
-    const sheet = workbook.Sheets[sheetName];
-    if (!sheet) {
-      continue;
-    }
-
-    const csv = XLSX.utils.sheet_to_csv(sheet, {
-      blankrows: false,
-      FS: ",",
-      RS: "\n",
+// O SheetJS fica fora do carregamento inicial. Assim, PDF, CSV e imagens
+// continuam disponíveis mesmo quando o runtime da Edge Function não consegue
+// inicializar um parser de planilhas. A importação só ocorre quando o arquivo
+// realmente é XLS/XLSX.
+async function extractWorkbookText(bytes: Uint8Array): Promise<string> {
+  try {
+    const XLSX = await import("npm:xlsx@0.18.5");
+    const workbook = XLSX.read(bytes, {
+      type: "array",
+      raw: false,
+      cellDates: false,
     });
 
-    if (csv.trim()) {
-      sections.push(`### ABA: ${sheetName}\n${csv}`);
-    }
-  }
+    const sections: string[] = [];
 
-  return sections.join("\n\n");
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) {
+        continue;
+      }
+
+      const csv = XLSX.utils.sheet_to_csv(sheet, {
+        blankrows: false,
+        FS: ",",
+        RS: "\n",
+      });
+
+      if (csv.trim()) {
+        sections.push(`### ABA: ${sheetName}\n${csv}`);
+      }
+    }
+
+    return sections.join("\n\n");
+  } catch (error) {
+    console.error("Falha ao carregar parser de planilha", error);
+    throw new Error(
+      "Não foi possível ler a planilha. Tente exportá-la como CSV, PDF ou imagem.",
+    );
+  }
 }
 
 async function callGemini(input: {
@@ -509,7 +543,9 @@ function normalizePreviewResult(raw: unknown, fileName: string) {
       numero: optionalNonNegativeInteger(mesa.numero),
       nome_exibicao: cleanString(mesa.nome_exibicao) || "Mesa sem nome",
       detalhe: cleanString(mesa.detalhe),
-      capacidade: optionalNonNegativeInteger(mesa.capacidade),
+      capacidade: optionalCapacity(mesa.capacidade),
+      capacidade_inferida_automaticamente:
+        mesa.capacidade_inferida_automaticamente === true,
       convidados: asArray(mesa.convidados).map(normalizeGuest),
     };
   });
@@ -549,13 +585,15 @@ function reconcilePreviewResult(result: any) {
   const tables = asArray(result.mesas).map((value) => {
     const table = isRecord(value) ? value : {};
     const guests = asArray(table.convidados);
-    const capacity = Number(table.capacidade);
+    const declaredCapacity = optionalCapacity(table.capacidade);
+    const hasDeclaredCapacity = declaredCapacity !== null;
+    const capacity = hasDeclaredCapacity ? declaredCapacity : null;
     const tableNumber = Number(table.numero);
     const normalizedNumber = Number.isInteger(tableNumber) && tableNumber >= 0
       ? tableNumber
       : null;
 
-    if (Number.isInteger(capacity) && capacity >= 0 && guests.length !== capacity) {
+    if (hasDeclaredCapacity && guests.length !== capacity) {
       const label = normalizedNumber === 0
         ? "Mesa Família"
         : normalizedNumber === null
@@ -574,10 +612,9 @@ function reconcilePreviewResult(result: any) {
 
     return {
       ...table,
-      detalhe: cleanString(table.detalhe) ||
-        (Number.isInteger(capacity) && capacity >= 0
-          ? `${capacity} lugares`
-          : ""),
+      capacidade: capacity,
+      capacidade_inferida_automaticamente: false,
+      detalhe: normalizeTableDetail(table.detalhe),
       convidados: guests,
     };
   });
@@ -609,17 +646,66 @@ function reconcilePreviewResult(result: any) {
 
 function normalizeGuest(value: unknown) {
   const guest = isRecord(value) ? value : {};
-  const description = cleanString(guest.descricao);
+  let description = cleanString(guest.descricao);
+  const emailEncontrado = normalizeEmail(
+    cleanString(guest.email) || extractEmail(description),
+  );
+  const whatsappEncontrado = normalizePhone(
+    cleanString(guest.whatsapp) || extractPhone(description),
+  );
+  if (emailEncontrado) {
+    description = removeFromDescription(description, emailEncontrado);
+  }
+  if (whatsappEncontrado) {
+    description = removeFromDescription(description, whatsappEncontrado);
+  }
   const confidence = Number(guest.confianca);
 
   return {
     nome: cleanString(guest.nome) || "Nome não identificado",
     descricao: description || null,
+    email: emailEncontrado || null,
+    whatsapp: whatsappEncontrado || null,
     categoria: normalizeGuestCategory(guest.categoria),
     confianca: Number.isFinite(confidence)
       ? Math.max(0, Math.min(1, confidence))
       : 1,
   };
+}
+
+function extractEmail(value: string): string {
+  return value.match(/[\w.!#$%&'*+/=?^`{|}~-]+@[\w-]+(?:\.[\w-]+)+/i)?.[0] ?? "";
+}
+
+function extractPhone(value: string): string {
+  const match = value.match(
+    /(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?9?\s*\d{4}[\s-]*\d{4}/,
+  );
+  return match?.[0] ?? "";
+}
+
+function normalizeEmail(value: string): string {
+  return extractEmail(value).toLowerCase();
+}
+
+function normalizePhone(value: string): string {
+  const digits = value.replace(/\D/g, "");
+  if (digits.length < 10 || digits.length > 13) {
+    return "";
+  }
+  return digits;
+}
+
+function removeFromDescription(description: string, value: string): string {
+  if (!description || !value) {
+    return description;
+  }
+  return description
+    .replace(value, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s*[,;|]\s*([,;|])/g, "$1")
+    .replace(/^\s*[,;|]\s*|\s*[,;|]\s*$/g, "")
+    .trim();
 }
 
 function normalizeGuestCategory(value: unknown): string {
@@ -787,43 +873,54 @@ REGRAS PARA LEGENDAS E OBSERVAÇÕES:
    em uma única descricao separada por ponto e vírgula.
 6. Nunca invente o significado de uma cor. Se a legenda não estiver legível, mantenha
    o nome, não atribua significado e crie aviso "informacao_incompleta".
+7. Se houver um e-mail escrito junto ao nome, preencha o campo email. Se houver um
+   telefone ou WhatsApp escrito junto ao nome, preencha o campo whatsapp. Esses dados
+   nunca devem ser colocados em descricao.
+8. Reconheça e-mails mesmo quando estiverem em outra coluna da mesma linha do nome.
+   Reconheça telefones brasileiros com DDD, com ou sem espaços, parênteses e hífen.
 
 REGRAS PARA MESAS E CONTAGEM:
-7. Em documentos organizados como grade, cada cabeçalho "MESA ..." inicia uma COLUNA.
+9. Em documentos organizados como grade, cada cabeçalho "MESA ..." inicia uma COLUNA.
    Leia os nomes de cima para baixo dentro da coluna correspondente. Não leia uma linha
    inteira da esquerda para a direita como se todos os nomes pertencessem à mesma mesa.
-8. Quando surgir uma nova faixa de cabeçalhos de mesas, reinicie os limites das colunas.
-9. A capacidade deve ser copiada somente do texto do cabeçalho, como "8 lugares".
-   Não estime a capacidade pela quantidade de nomes.
-10. Cada pessoa deve aparecer exatamente uma vez no resultado, na mesa visualmente
+10. Quando surgir uma nova faixa de cabeçalhos de mesas, reinicie os limites das colunas.
+11. A capacidade deve ser copiada somente do texto do cabeçalho, como "8 lugares".
+   Quando o cabeçalho não informar explicitamente a quantidade de lugares, use -1.
+   Nesse caso NÃO calcule a capacidade pela quantidade de convidados, NÃO use zero,
+   NÃO escreva "0 lugares" e NÃO crie aviso de divergência por capacidade ausente.
+12. Cada pessoa deve aparecer exatamente uma vez no resultado, na mesa visualmente
     correspondente. Não mova nomes para fazer a contagem coincidir com a capacidade.
-11. Depois de montar cada array convidados, conte o tamanho real do array. Se ele for
-    diferente da capacidade declarada, crie aviso "capacidade_divergente" informando
-    os dois números exatos. A capacidade é informativa e não limita a extração.
-12. Preserve nomes duplicados. Apenas crie aviso de possível duplicidade; não una e
+13. Depois de montar cada array convidados, compare o tamanho real do array somente
+    com uma capacidade explicitamente declarada no arquivo. Se a capacidade estiver
+    ausente, não compare, não invente capacidade e não crie aviso. Se houver
+    capacidade declarada e ela for diferente da quantidade reconhecida, crie aviso
+    "capacidade_divergente" informando os dois números exatos.
+14. Preserve nomes duplicados. Apenas crie aviso de possível duplicidade; não una e
     não exclua ninguém.
 
 REGRAS GERAIS:
-13. Extraia TODAS as pessoas. Nunca remova nomes.
-14. Preserve a grafia encontrada, corrigindo apenas espaços evidentes. Não invente
+15. Extraia TODAS as pessoas. Nunca remova nomes.
+16. Preserve a grafia encontrada, corrigindo apenas espaços evidentes. Não invente
     sobrenomes nem informações.
-15. Associe cada pessoa à mesa visualmente correspondente.
-16. Para "Mesa Família" sem número, use numero 0. Para mesa realmente não
+17. Associe cada pessoa à mesa visualmente correspondente.
+18. Para "Mesa Família" sem número, use numero 0. Para mesa realmente não
     identificável, use numero -1 e crie aviso.
-17. Em capacidade, use a quantidade declarada de lugares; use -1 quando ausente.
-18. Use categoria "outra" quando descricao tiver conteúdo e "normal" quando estiver
+19. Em capacidade, use a quantidade declarada de lugares; use -1 quando ausente.
+    Nunca use a quantidade de nomes reconhecidos para preencher capacidade e nunca
+    transforme ausência em 0.
+20. Use categoria "outra" quando descricao tiver conteúdo e "normal" quando estiver
     vazia. Categoria é somente um marcador genérico.
-19. Use confiança de 0 a 1 para cada nome. Abaixo de 0,75, crie também aviso
+21. Use confiança de 0 a 1 para cada nome. Abaixo de 0,75, crie também aviso
     "nome_ilegivel".
-20. Pessoas que não puderem ser ligadas a uma mesa devem ir em convidados_sem_mesa;
+22. Pessoas que não puderem ser ligadas a uma mesa devem ir em convidados_sem_mesa;
     nunca devem desaparecer.
-21. Não grave dados, não produza SQL e não resuma omitindo nomes. A saída deve conter
+23. Não grave dados, não produza SQL e não resuma omitindo nomes. A saída deve conter
     a lista integral.
-22. Para campos de texto opcionais sem conteúdo, use string vazia. Para números
+24. Para campos de texto opcionais sem conteúdo, use string vazia. Para números
     opcionais ausentes, use -1.
-23. Use o contexto global: cabeçalhos, proximidade visual, alinhamento, cores, notas
+25. Use o contexto global: cabeçalhos, proximidade visual, alinhamento, cores, notas
     de rodapé e padrões repetidos em outras páginas.
-24. O fato de uma lista anterior ter usado determinada cor para determinado significado
+26. O fato de uma lista anterior ter usado determinada cor para determinado significado
     não cria regra para novos arquivos.
 
 VERIFICAÇÃO FINAL OBRIGATÓRIA:
@@ -868,6 +965,22 @@ function optionalNonNegativeInteger(value: unknown): number | null {
     return null;
   }
   return number;
+}
+
+function optionalCapacity(value: unknown): number | null {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1) {
+    return null;
+  }
+  return number;
+}
+
+function normalizeTableDetail(value: unknown): string {
+  return cleanString(value)
+    .replace(/\b0\s+lugar(?:es)?\b/gi, "")
+    .replace(/\s*([•·|])\s*/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 function asArray(value: unknown): unknown[] {

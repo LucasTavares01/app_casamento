@@ -161,14 +161,19 @@ class _AbaCadastroState extends State<AbaCadastro> {
 
   void _dialogConvidado(List<Mesa> mesas, {Convidado? convidadoEdit}) {
     final nomeCtrl = TextEditingController(text: convidadoEdit?.nome ?? '');
+    final emailCtrl = TextEditingController(text: convidadoEdit?.email ?? '');
+    final whatsappCtrl = TextEditingController(
+      text: convidadoEdit?.whatsapp ?? '',
+    );
     const valorSemMesa = '__sem_mesa__';
     var valorMesaSelecionada = convidadoEdit?.mesaId ?? valorSemMesa;
+    var salvando = false;
 
     showDialog<void>(
       context: context,
       builder: (context) {
         return StatefulBuilder(
-          builder: (context, setDialogState) {
+          builder: (dialogContext, setDialogState) {
             return AlertDialog(
               scrollable: true,
               title: Text(
@@ -181,6 +186,25 @@ class _AbaCadastroState extends State<AbaCadastro> {
                     controller: nomeCtrl,
                     decoration: const InputDecoration(
                       hintText: 'Nome do Convidado',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: emailCtrl,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(
+                      labelText: 'E-mail (opcional)',
+                      prefixIcon: Icon(Icons.email_outlined),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: whatsappCtrl,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(
+                      labelText: 'WhatsApp (opcional)',
+                      hintText: 'DDD + número',
+                      prefixIcon: Icon(Icons.phone_outlined),
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -211,13 +235,21 @@ class _AbaCadastroState extends State<AbaCadastro> {
               actions: [
                 TextButton(
                   onPressed: () {
-                    Navigator.pop(context);
+                    if (!salvando) {
+                      Navigator.pop(dialogContext);
+                    }
                   },
                   child: const Text('Cancelar'),
                 ),
                 ElevatedButton(
                   onPressed: () async {
-                    Navigator.pop(context);
+                    if (salvando) {
+                      return;
+                    }
+
+                    setDialogState(() {
+                      salvando = true;
+                    });
 
                     try {
                       if (convidadoEdit == null) {
@@ -226,6 +258,8 @@ class _AbaCadastroState extends State<AbaCadastro> {
                           valorMesaSelecionada == valorSemMesa
                               ? null
                               : valorMesaSelecionada,
+                          email: emailCtrl.text,
+                          whatsapp: whatsappCtrl.text,
                         );
                       } else {
                         await _servico.editarConvidado(
@@ -234,15 +268,39 @@ class _AbaCadastroState extends State<AbaCadastro> {
                           valorMesaSelecionada == valorSemMesa
                               ? null
                               : valorMesaSelecionada,
+                          email: emailCtrl.text,
+                          whatsapp: whatsappCtrl.text,
                         );
                       }
+
+                      if (!dialogContext.mounted) {
+                        return;
+                      }
+
+                      Navigator.pop(dialogContext);
+                      _mostrarSucesso(
+                        convidadoEdit == null
+                            ? 'Convidado salvo. A sincronização será feita automaticamente.'
+                            : 'Convidado atualizado. A sincronização será feita automaticamente.',
+                      );
                     } catch (erro) {
+                      if (dialogContext.mounted) {
+                        setDialogState(() {
+                          salvando = false;
+                        });
+                      }
                       _mostrarErro(
                         'Não foi possível salvar o convidado: $erro',
                       );
                     }
                   },
-                  child: const Text('Salvar'),
+                  child: salvando
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Salvar'),
                 ),
               ],
             );
@@ -615,78 +673,80 @@ class _AbaCadastroState extends State<AbaCadastro> {
     final tema = Theme.of(context);
     final cores = tema.colorScheme;
 
+    return _abaRecepcao(tema, cores);
+  }
+
+  Widget _abaRecepcao(ThemeData tema, ColorScheme cores) {
     return DefaultTabController(
       length: 2,
-      child: Scaffold(
-        appBar: const TabBar(
-          tabs: [
-            Tab(text: 'MESAS', icon: Icon(Icons.table_bar)),
-            Tab(text: 'CONVIDADOS', icon: Icon(Icons.person_add)),
-          ],
-        ),
-        body: Column(
-          children: [
-            SizedBox(
-              width: double.infinity,
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: () async {
-                    final importada = await Navigator.of(context).push<bool>(
-                      MaterialPageRoute(
-                        builder: (_) => const TelaImportacaoLista(),
-                      ),
-                    );
-                    if (importada == true && mounted) {
-                      widget.onListaImportada?.call();
-                    }
-                  },
-                  child: Ink(
-                    height: 58,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.centerLeft,
-                        end: Alignment.centerRight,
-                        colors: [
-                          cores.primary.withValues(alpha: 0.20),
-                          cores.primary.withValues(alpha: 0.04),
-                          Colors.transparent,
-                        ],
-                        stops: const [0.0, 0.42, 1.0],
-                      ),
+      child: Column(
+        children: [
+          SizedBox(
+            width: double.infinity,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () async {
+                  final importada = await Navigator.of(context).push<bool>(
+                    MaterialPageRoute(
+                      builder: (_) => const TelaImportacaoLista(),
                     ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.upload_file_outlined,
-                            color: cores.primary,
-                            size: 23,
-                          ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Text(
-                              'Importar lista de convidados',
-                              style: tema.textTheme.titleMedium?.copyWith(
-                                color: cores.onSurfaceVariant,
-                                fontWeight: FontWeight.w600,
-                              ),
+                  );
+                  if (importada == true && mounted) {
+                    widget.onListaImportada?.call();
+                  }
+                },
+                child: Ink(
+                  height: 58,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.centerLeft,
+                      end: Alignment.centerRight,
+                      colors: [
+                        cores.primary.withValues(alpha: 0.20),
+                        cores.primary.withValues(alpha: 0.04),
+                        Colors.transparent,
+                      ],
+                      stops: const [0.0, 0.42, 1.0],
+                    ),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.upload_file_outlined,
+                          color: cores.primary,
+                          size: 23,
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Text(
+                            'Importar lista de convidados',
+                            style: tema.textTheme.titleMedium?.copyWith(
+                              color: cores.onSurfaceVariant,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
-                          Icon(Icons.chevron_right, color: cores.primary),
-                        ],
-                      ),
+                        ),
+                        Icon(Icons.chevron_right, color: cores.primary),
+                      ],
                     ),
                   ),
                 ),
               ),
             ),
-            Expanded(
-              child: TabBarView(children: [_listaMesas(), _listaConvidados()]),
-            ),
-          ],
-        ),
+          ),
+          const TabBar(
+            tabs: [
+              Tab(text: 'MESAS', icon: Icon(Icons.table_bar)),
+              Tab(text: 'CONVIDADOS', icon: Icon(Icons.person_add)),
+            ],
+          ),
+          Expanded(
+            child: TabBarView(children: [_listaMesas(), _listaConvidados()]),
+          ),
+        ],
       ),
     );
   }

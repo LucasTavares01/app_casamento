@@ -253,6 +253,8 @@ class SupabaseServico {
         return Convidado(
           id: registro.id,
           nome: registro.nome,
+          email: registro.email,
+          whatsapp: registro.whatsapp,
           mesaId: registro.mesaId,
           chegou: registro.chegou,
           temConflito: registro.temConflito,
@@ -263,7 +265,12 @@ class SupabaseServico {
   }
 
   /// Adiciona um convidado no banco local.
-  Future<void> adicionarConvidado(String nome, String? mesaId) async {
+  Future<void> adicionarConvidado(
+    String nome,
+    String? mesaId, {
+    String? email,
+    String? whatsapp,
+  }) async {
     _exigirEdicao();
     final usuarioId = _obterUsuarioAtualId();
     final usuarioNome = _obterUsuarioAtualNome();
@@ -275,6 +282,8 @@ class SupabaseServico {
       'id': id,
       'casamento_id': _casamentoAtualId,
       'nome': nomeNormalizado,
+      'email': _normalizarTextoOpcional(email),
+      'whatsapp': _normalizarTextoOpcional(whatsapp),
       'mesa_id': mesaId,
       'chegou': false,
       'created_at': agora.toIso8601String(),
@@ -291,6 +300,8 @@ class SupabaseServico {
             ConvidadosLocaisCompanion.insert(
               id: id,
               nome: nomeNormalizado,
+              email: Value(_normalizarTextoOpcional(email)),
+              whatsapp: Value(_normalizarTextoOpcional(whatsapp)),
               mesaId: Value(mesaId),
               chegou: const Value(false),
               temConflito: const Value(false),
@@ -313,7 +324,13 @@ class SupabaseServico {
   }
 
   /// Edita um convidado no banco local.
-  Future<void> editarConvidado(String id, String nome, String? mesaId) async {
+  Future<void> editarConvidado(
+    String id,
+    String nome,
+    String? mesaId, {
+    String? email,
+    String? whatsapp,
+  }) async {
     _exigirEdicao();
     final usuarioId = _obterUsuarioAtualId();
     final usuarioNome = _obterUsuarioAtualNome();
@@ -341,6 +358,8 @@ class SupabaseServico {
       'id': id,
       'casamento_id': _casamentoAtualId,
       'nome': nomeNormalizado,
+      'email': _normalizarTextoOpcional(email),
+      'whatsapp': _normalizarTextoOpcional(whatsapp),
       'mesa_id': mesaId,
       'chegou': convidadoAtual.chegou,
       'created_at': convidadoAtual.criadoEm.toUtc().toIso8601String(),
@@ -364,6 +383,8 @@ class SupabaseServico {
       )..where((tabela) => tabela.id.equals(id))).write(
         ConvidadosLocaisCompanion(
           nome: Value(nomeNormalizado),
+          email: Value(_normalizarTextoOpcional(email)),
+          whatsapp: Value(_normalizarTextoOpcional(whatsapp)),
           mesaId: Value(mesaId),
           atualizadoEm: Value(agora),
           excluido: const Value(false),
@@ -404,6 +425,8 @@ class SupabaseServico {
       'id': id,
       'casamento_id': _casamentoAtualId,
       'nome': convidadoAtual.nome,
+      'email': convidadoAtual.email,
+      'whatsapp': convidadoAtual.whatsapp,
       'mesa_id': convidadoAtual.mesaId,
       'chegou': convidadoAtual.chegou,
       'created_at': convidadoAtual.criadoEm.toUtc().toIso8601String(),
@@ -433,6 +456,104 @@ class SupabaseServico {
     });
 
     _agendarSincronizacaoDepoisDaGravacao();
+  }
+
+  /// Cria ou renova o link individual de um convidado.
+  ///
+  /// A operação exige internet porque o token nunca é armazenado no celular.
+  Future<Map<String, dynamic>> criarConviteOnline(String convidadoId) async {
+    _exigirEdicao();
+
+    final resposta = await _supabase.rpc(
+      'criar_convite_online_v1',
+      params: {
+        'p_casamento_id': _casamentoAtualId,
+        'p_convidado_id': convidadoId,
+      },
+    );
+
+    if (resposta is! Map) {
+      throw StateError('O Supabase não retornou o convite online.');
+    }
+
+    return Map<String, dynamic>.from(resposta);
+  }
+
+  Future<void> registrarEnvioConviteOnline({
+    required String conviteId,
+    required String canal,
+  }) async {
+    await _supabase.rpc(
+      'registrar_envio_convite_online_v1',
+      params: {'p_convite_id': conviteId, 'p_canal': canal},
+    );
+  }
+
+  /// Envia os convites por e-mail no servidor, sem abrir o aplicativo de
+  /// e-mail no celular. O retorno contém os links criados para que a fila de
+  /// WhatsApp possa reutilizar os mesmos convites.
+  Future<Map<String, dynamic>> enviarConvitesEmailEmLote({
+    List<String>? convidadoIds,
+  }) async {
+    _exigirEdicao();
+
+    final casamento = CasamentoAtualServico.instance.casamento;
+    if (casamento == null || !casamento.ehAdmin) {
+      throw StateError('Somente administradoras podem enviar convites.');
+    }
+
+    final body = <String, dynamic>{'casamento_id': casamento.id};
+    if (convidadoIds != null && convidadoIds.isNotEmpty) {
+      body['convidado_ids'] = convidadoIds;
+    }
+
+    final resposta = await _supabase.functions.invoke(
+      'enviar-convites-email',
+      body: body,
+    );
+    final dados = resposta.data is Map
+        ? Map<String, dynamic>.from(resposta.data as Map)
+        : <String, dynamic>{};
+
+    if (resposta.status < 200 || resposta.status >= 300) {
+      throw StateError(
+        dados['mensagem']?.toString() ??
+            'Não foi possível enviar os convites por e-mail.',
+      );
+    }
+
+    return dados;
+  }
+
+  Future<List<Map<String, dynamic>>> listarConvitesOnline() async {
+    final dados = await _supabase
+        .from('convites_online')
+        .select(
+          'id, convidado_id, status, canais_enviados, ultimo_canal, '
+          'enviado_em, aberto_em, respondido_em, resposta',
+        )
+        .eq('casamento_id', _casamentoAtualId);
+
+    return (dados as List)
+        .map((registro) => Map<String, dynamic>.from(registro as Map))
+        .toList();
+  }
+
+  /// Observa os convites do evento em tempo real.
+  ///
+  /// Assim, quando o convidado abre o link e confirma ou recusa a presença,
+  /// todos os aparelhos autorizados recebem o novo status sem precisar
+  /// atualizar manualmente a tela.
+  Stream<List<Map<String, dynamic>>> observarConvitesOnline() {
+    return _supabase
+        .from('convites_online')
+        .stream(primaryKey: ['id'])
+        .eq('casamento_id', _casamentoAtualId)
+        .map(
+          (dados) => dados
+              .map((registro) => Map<String, dynamic>.from(registro))
+              .toList(),
+        );
   }
 
   // ============================================================

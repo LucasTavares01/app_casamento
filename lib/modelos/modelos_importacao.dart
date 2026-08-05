@@ -95,6 +95,7 @@ class MesaPreviaImportacao {
   final int? capacidade;
   final List<ConvidadoPreviaImportacao> convidados;
   final bool numeroGeradoAutomaticamente;
+  final bool capacidadeInferidaAutomaticamente;
 
   const MesaPreviaImportacao({
     required this.numero,
@@ -103,19 +104,25 @@ class MesaPreviaImportacao {
     required this.capacidade,
     required this.convidados,
     this.numeroGeradoAutomaticamente = false,
+    this.capacidadeInferidaAutomaticamente = false,
   });
 
   factory MesaPreviaImportacao.fromJson(Map<String, dynamic> json) {
+    final convidados = _listaMapas(
+      json['convidados'],
+    ).map(ConvidadoPreviaImportacao.fromJson).toList(growable: false);
+    final capacidadeRecebida = _inteiroOpcional(json['capacidade']);
+
     return MesaPreviaImportacao(
       numero: _inteiroOpcional(json['numero']),
       nomeExibicao: _texto(json['nome_exibicao'], fallback: 'Mesa sem nome'),
       detalhe: _texto(json['detalhe']),
-      capacidade: _inteiroOpcional(json['capacidade']),
-      convidados: _listaMapas(
-        json['convidados'],
-      ).map(ConvidadoPreviaImportacao.fromJson).toList(growable: false),
+      capacidade: capacidadeRecebida,
+      convidados: convidados,
       numeroGeradoAutomaticamente:
           json['numero_gerado_automaticamente'] == true,
+      capacidadeInferidaAutomaticamente:
+          json['capacidade_inferida_automaticamente'] == true,
     );
   }
 
@@ -126,6 +133,7 @@ class MesaPreviaImportacao {
       'detalhe': detalhe,
       'capacidade': capacidade,
       'numero_gerado_automaticamente': numeroGeradoAutomaticamente,
+      'capacidade_inferida_automaticamente': capacidadeInferidaAutomaticamente,
       'convidados': convidados
           .map((convidado) => convidado.toJson())
           .toList(growable: false),
@@ -139,6 +147,7 @@ class MesaPreviaImportacao {
     int? capacidade,
     List<ConvidadoPreviaImportacao>? convidados,
     bool? numeroGeradoAutomaticamente,
+    bool? capacidadeInferidaAutomaticamente,
   }) {
     return MesaPreviaImportacao(
       numero: numero ?? this.numero,
@@ -148,6 +157,9 @@ class MesaPreviaImportacao {
       convidados: convidados ?? this.convidados,
       numeroGeradoAutomaticamente:
           numeroGeradoAutomaticamente ?? this.numeroGeradoAutomaticamente,
+      capacidadeInferidaAutomaticamente:
+          capacidadeInferidaAutomaticamente ??
+          this.capacidadeInferidaAutomaticamente,
     );
   }
 
@@ -177,12 +189,16 @@ class MesaPreviaImportacao {
 class ConvidadoPreviaImportacao {
   final String nome;
   final String? descricao;
+  final String? email;
+  final String? whatsapp;
   final CategoriaConvidado categoria;
   final double confianca;
 
   const ConvidadoPreviaImportacao({
     required this.nome,
     required this.descricao,
+    required this.email,
+    required this.whatsapp,
     required this.categoria,
     required this.confianca,
   });
@@ -193,6 +209,8 @@ class ConvidadoPreviaImportacao {
     return ConvidadoPreviaImportacao(
       nome: _texto(json['nome'], fallback: 'Nome não identificado'),
       descricao: descricao,
+      email: _textoOpcional(json['email']),
+      whatsapp: _textoOpcional(json['whatsapp']),
       categoria: CategoriaConvidado.fromJson(json['categoria']),
       confianca: _numero(
         json['confianca'],
@@ -205,6 +223,8 @@ class ConvidadoPreviaImportacao {
     return {
       'nome': nome,
       'descricao': descricao,
+      'email': email,
+      'whatsapp': whatsapp,
       'categoria': categoria.valorJson,
       'confianca': confianca,
     };
@@ -212,13 +232,23 @@ class ConvidadoPreviaImportacao {
 
   ConvidadoPreviaImportacao copyWith({
     String? nome,
-    String? descricao,
+    Object? descricao = _campoNaoAlterado,
+    Object? email = _campoNaoAlterado,
+    Object? whatsapp = _campoNaoAlterado,
     CategoriaConvidado? categoria,
     double? confianca,
   }) {
     return ConvidadoPreviaImportacao(
       nome: nome ?? this.nome,
-      descricao: descricao ?? this.descricao,
+      descricao: identical(descricao, _campoNaoAlterado)
+          ? this.descricao
+          : _textoOpcional(descricao),
+      email: identical(email, _campoNaoAlterado)
+          ? this.email
+          : _textoOpcional(email),
+      whatsapp: identical(whatsapp, _campoNaoAlterado)
+          ? this.whatsapp
+          : _textoOpcional(whatsapp),
       categoria: categoria ?? this.categoria,
       confianca: confianca ?? this.confianca,
     );
@@ -240,6 +270,8 @@ class ConvidadoPreviaImportacao {
 
   bool get leituraComBaixaConfianca => confianca < 0.75;
 }
+
+const Object _campoNaoAlterado = Object();
 
 enum CategoriaConvidado {
   normal,

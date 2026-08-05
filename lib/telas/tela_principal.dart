@@ -20,8 +20,13 @@ enum _AcaoMenuEvento { editar, conflitos, sair }
 
 class TelaPrincipal extends StatefulWidget {
   final bool somenteLeituraInicial;
+  final int abaInicial;
 
-  const TelaPrincipal({super.key, this.somenteLeituraInicial = false});
+  const TelaPrincipal({
+    super.key,
+    this.somenteLeituraInicial = false,
+    this.abaInicial = 0,
+  });
 
   @override
   State<TelaPrincipal> createState() => _TelaPrincipalState();
@@ -55,6 +60,8 @@ class _TelaPrincipalState extends State<TelaPrincipal>
   @override
   void initState() {
     super.initState();
+
+    _abaSelecionada = widget.abaInicial;
 
     _streamConflitos = _servico.listarConflitosPendentes();
     _eventoJaFinalizadoAoAbrir =
@@ -235,8 +242,8 @@ class _TelaPrincipalState extends State<TelaPrincipal>
     if (!resultado.semConexao &&
         CasamentoAtualServico.instance.casamento != null) {
       try {
-        final possuiAcesso =
-            await CasamentoAtualServico.instance.confirmarAcessoOnline();
+        final possuiAcesso = await CasamentoAtualServico.instance
+            .confirmarAcessoOnline();
         if (!possuiAcesso) {
           await _tratarAcessoAoCasamentoRevogado();
           return;

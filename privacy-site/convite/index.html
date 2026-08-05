@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Convite | ConfirmaAi</title>
+  <style>
+    :root { --coral:#ef6b57; --coral-dark:#c95343; --cream:#fff8f3; --ink:#382b28; --card:#fff1ed; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; background:var(--cream); color:var(--ink); font-family:Arial, sans-serif; }
+    main { width:min(100%, 480px); background:white; border-radius:28px; overflow:hidden; box-shadow:0 12px 36px rgba(91,48,38,.14); }
+    header { padding:28px 28px 24px; background:linear-gradient(135deg,#ffd8cc,#ffc5b7); }
+    .marca { font-size:28px; font-weight:800; letter-spacing:-.5px; }
+    .subtitulo { margin-top:7px; font-size:14px; opacity:.78; }
+    section { padding:28px; }
+    h1 { margin:0 0 8px; font-size:27px; line-height:1.15; }
+    .evento { color:var(--coral-dark); font-weight:700; font-size:18px; }
+    .detalhes { margin:22px 0; padding:18px; background:var(--card); border-radius:18px; line-height:1.65; }
+    .detalhes strong { display:inline-block; min-width:92px; }
+    .aviso { padding:14px 16px; border:1px solid #f4c1b6; border-radius:14px; font-size:14px; line-height:1.45; background:#fffaf8; }
+    .acoes { display:grid; gap:12px; margin-top:24px; }
+    button { border:0; border-radius:14px; padding:15px 18px; font-size:16px; font-weight:700; cursor:pointer; }
+    .confirmar { color:#fff; background:var(--coral); }
+    .recusar { color:var(--coral-dark); background:#fff; border:1px solid #e8a99b; }
+    button:disabled { opacity:.6; cursor:wait; }
+    .estado { min-height:30px; margin-top:16px; text-align:center; font-weight:700; }
+    .erro { text-align:center; }
+    .erro p { line-height:1.5; opacity:.8; }
+    .rodape { margin-top:24px; text-align:center; font-size:12px; color:#806e69; }
+    [hidden] { display:none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="marca">ConfirmaAi</div>
+      <div class="subtitulo">Confirmação de presença</div>
+    </header>
+    <section id="carregando"><p>Carregando seu convite...</p></section>
+    <section id="erro" class="erro" hidden>
+      <h1>Convite indisponível</h1>
+      <p>Esse link pode ter expirado, sido substituído ou o evento já foi finalizado. Peça um novo convite ao responsável.</p>
+    </section>
+    <section id="conteudo" hidden>
+      <h1>Você está convidado!</h1>
+      <div class="evento" id="titulo"></div>
+      <div class="detalhes">
+        <div><strong>Convidado:</strong> <span id="nome"></span></div>
+        <div id="dataLinha"><strong>Data:</strong> <span id="data"></span></div>
+        <div id="horaLinha"><strong>Horário:</strong> <span id="hora"></span></div>
+        <div id="localLinha"><strong>Local:</strong> <span id="local"></span></div>
+      </div>
+      <div class="aviso">Confirme sua resposta para ajudar a equipe a preparar o evento. Esta confirmação online não substitui o registro de chegada no dia da festa.</div>
+      <div class="acoes">
+        <button class="confirmar" id="confirmar">Vou participar</button>
+        <button class="recusar" id="recusar">Não vou participar</button>
+      </div>
+      <div class="estado" id="estado" role="status"></div>
+      <div class="rodape">ConfirmaAi · Gestão simples da recepção do evento</div>
+    </section>
+  </main>
+  <script>
+    const SUPABASE_URL = 'https://rtidfwtjjpgwlgljfsyd.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0aWRmd3RqanBnd2xnbGpmc3lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyNDA3OTIsImV4cCI6MjA5NDgxNjc5Mn0.ykA0xDpKNGDgL08pN5k4P3idDsA8fiXsLnXmar-y0Tw';
+    const token = new URLSearchParams(location.search).get('token');
+    const headers = { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' };
+    const $ = (id) => document.getElementById(id);
+
+    function formatarData(valor) {
+      if (!valor) return '';
+      const partes = String(valor).split('-');
+      return partes.length === 3 ? `${partes[2]}/${partes[1]}/${partes[0]}` : valor;
+    }
+
+    function mostrarErro() { $('carregando').hidden = true; $('conteudo').hidden = true; $('erro').hidden = false; }
+
+    async function carregar() {
+      if (!token) return mostrarErro();
+      try {
+        const resposta = await fetch(`${SUPABASE_URL}/rest/v1/rpc/obter_convite_online_v1`, { method:'POST', headers, body:JSON.stringify({ p_token:token }) });
+        if (!resposta.ok) return mostrarErro();
+        const dados = await resposta.json();
+        if (!dados || !dados.id) return mostrarErro();
+        $('titulo').textContent = dados.titulo || 'Seu evento';
+        $('nome').textContent = dados.convidado_nome || 'Convidado';
+        if (dados.data_evento) $('data').textContent = formatarData(dados.data_evento); else $('dataLinha').hidden = true;
+        if (dados.hora_evento) $('hora').textContent = String(dados.hora_evento).slice(0,5); else $('horaLinha').hidden = true;
+        if (dados.local_evento) $('local').textContent = dados.local_evento; else $('localLinha').hidden = true;
+        $('carregando').hidden = true; $('conteudo').hidden = false;
+      } catch (_) { mostrarErro(); }
+    }
+
+    async function responder(resposta) {
+      $('confirmar').disabled = true; $('recusar').disabled = true; $('estado').textContent = 'Salvando sua resposta...';
+      try {
+        const chamada = await fetch(`${SUPABASE_URL}/rest/v1/rpc/responder_convite_online_v1`, { method:'POST', headers, body:JSON.stringify({ p_token:token, p_resposta:resposta }) });
+        if (!chamada.ok) throw new Error('Falha');
+        $('estado').textContent = resposta === 'confirmado' ? 'Presença confirmada! Esperamos você.' : 'Resposta registrada. Obrigado por avisar!';
+      } catch (_) {
+        $('estado').textContent = 'Não foi possível salvar agora. Tente novamente.';
+        $('confirmar').disabled = false; $('recusar').disabled = false;
+      }
+    }
+    $('confirmar').addEventListener('click', () => responder('confirmado'));
+    $('recusar').addEventListener('click', () => responder('recusado'));
+    carregar();
+  </script>
+</body>
+</html>
