@@ -21,7 +21,11 @@
                 <h1 style="margin:0;color:#3A2924;font-size:25px;line-height:1.3;">Seu link de acesso está pronto</h1>
                 <p style="margin:18px 0 0;color:#5E4D46;font-size:16px;line-height:1.6;">Clique no botão abaixo para entrar no ConfirmaAi com segurança.</p>
                 <p style="margin:28px 0;text-align:center;">
+                  {{ if .Data.convite_app_link }}
+                  <a href="{{ .Data.convite_app_link }}" style="display:inline-block;background:#E96851;color:#FFFFFF;text-decoration:none;font-weight:700;font-size:15px;padding:14px 24px;border-radius:10px;">Entrar no ConfirmaAi</a>
+                  {{ else }}
                   <a href="{{ .ConfirmationURL }}" style="display:inline-block;background:#E96851;color:#FFFFFF;text-decoration:none;font-weight:700;font-size:15px;padding:14px 24px;border-radius:10px;">Entrar no ConfirmaAi</a>
+                  {{ end }}
                 </p>
                 <p style="margin:0;color:#7A665D;font-size:14px;line-height:1.5;">Se preferir, use este código:</p>
                 <div style="margin-top:12px;background:#FFE2C8;border-radius:12px;padding:18px;text-align:center;color:#8A4A2B;font-size:27px;font-weight:700;letter-spacing:8px;">{{ .Token }}</div>

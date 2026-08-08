@@ -6,9 +6,11 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'servicos/dispositivo_servico.dart';
 import 'servicos/monitor_conexao_servico.dart';
+import 'servicos/convite_funcionario_link_servico.dart';
 import 'servicos/sessao_servico.dart';
 import 'servicos/sincronizacao_automatica_servico.dart';
 import 'telas/porta_entrada.dart';
+import 'telas/tela_primeiro_acesso_funcionario.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,10 +19,16 @@ Future<void> main() async {
     url: 'https://rtidfwtjjpgwlgljfsyd.supabase.co',
     publishableKey:
         'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0aWRmd3RqanBnd2xnbGpmc3lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyNDA3OTIsImV4cCI6MjA5NDgxNjc5Mn0.ykA0xDpKNGDgL08pN5k4P3idDsA8fiXsLnXmar-y0Tw',
+    authOptions: const FlutterAuthClientOptions(
+      // O OAuth continua usando o callback nativo. Convites de funcionário
+      // usam um link próprio e não passam pelo consumo automático de OTP.
+      authFlowType: AuthFlowType.implicit,
+    ),
   );
 
   await DispositivoServico.instance.inicializar();
   await MonitorConexaoServico.instance.inicializar();
+  await ConviteFuncionarioLinkServico.instance.inicializar();
 
   runApp(const MeuAppCasamento());
 }
@@ -37,12 +45,15 @@ class _MeuAppCasamentoState extends State<MeuAppCasamento>
   final GlobalKey<NavigatorState> _navigatorKey =
       GlobalKey<NavigatorState>();
   StreamSubscription<AuthState>? _mudancasAutenticacao;
+  StreamSubscription<String>? _convitesFuncionario;
   bool _trocandoUsuario = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _convitesFuncionario = ConviteFuncionarioLinkServico.instance.novosConvites
+        .listen((_) => _abrirPrimeiroAcessoPorConvite());
     _mudancasAutenticacao = Supabase.instance.client.auth.onAuthStateChange
         .listen((dados) {
           if (dados.event == AuthChangeEvent.signedIn ||
@@ -50,13 +61,32 @@ class _MeuAppCasamentoState extends State<MeuAppCasamento>
             unawaited(_reconciliarUsuarioAutenticado());
           }
         });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (ConviteFuncionarioLinkServico.instance.possuiTokenPendente) {
+        _abrirPrimeiroAcessoPorConvite();
+      }
+    });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_mudancasAutenticacao?.cancel());
+    unawaited(_convitesFuncionario?.cancel());
     super.dispose();
+  }
+
+  void _abrirPrimeiroAcessoPorConvite() {
+    if (!mounted) return;
+    final navigator = _navigatorKey.currentState;
+    if (navigator == null) return;
+
+    navigator.pushAndRemoveUntil(
+      MaterialPageRoute(
+        builder: (_) => const TelaPrimeiroAcessoFuncionario(),
+      ),
+      (_) => false,
+    );
   }
 
   @override

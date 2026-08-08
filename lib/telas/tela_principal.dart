@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../modelos/modelos.dart';
+import '../modelos/tipos_evento.dart';
 import '../servicos/casamento_atual_servico.dart';
 import '../servicos/sessao_servico.dart';
 import '../servicos/supabase_servico.dart';
@@ -738,11 +739,13 @@ class _TelaPrincipalState extends State<TelaPrincipal>
 
   @override
   Widget build(BuildContext context) {
-    final usuarioAtual = SessaoServico.instance.usuarioAtual;
-    final nomeUsuario = usuarioAtual?.nome ?? 'Não identificado';
     final casamento = CasamentoAtualServico.instance.casamento;
     final ehAdmin = CasamentoAtualServico.instance.ehAdmin;
     final somenteLeitura = CasamentoAtualServico.instance.somenteLeitura;
+    final identificacaoEvento =
+        casamento?.descricaoPessoas.trim().isNotEmpty == true
+        ? casamento!.descricaoPessoas
+        : casamento?.titulo;
     final telas = <Widget>[
       const AbaRecepcao(),
       const AbaMesas(),
@@ -784,20 +787,35 @@ class _TelaPrincipalState extends State<TelaPrincipal>
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              casamento?.titulo ?? 'Gestão do Evento',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
-            ),
-            Text(
-              '${ehAdmin ? 'Responsável' : 'Membro da equipe'}'
-              '${somenteLeitura ? ' • Somente leitura' : ''}: $nomeUsuario',
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.normal,
+            if (casamento == null)
+              const Text(
+                'Gestão do Evento',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
+              )
+            else ...[
+              Text(
+                casamento.tipoEvento.rotulo,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-            ),
+              if (identificacaoEvento != null &&
+                  identificacaoEvento.trim().isNotEmpty)
+                Text(
+                  identificacaoEvento,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+            ],
           ],
         ),
         actions: [

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Convite de funcionário do ConfirmaAi.">
+  <title>Convite da equipe | ConfirmaAi</title>
+  <style>
+    :root { --coral:#ef6b57; --coral-dark:#c95343; --cream:#fff8f3; --ink:#382b28; --muted:#806e69; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px; background:var(--cream); color:var(--ink); font-family:Arial,sans-serif; }
+    main { width:min(100%, 480px); padding:32px; background:#fff; border-radius:26px; box-shadow:0 12px 36px rgba(91,48,38,.14); text-align:center; }
+    .marca { color:var(--coral-dark); font-size:28px; font-weight:800; }
+    h1 { margin:28px 0 12px; font-size:27px; line-height:1.15; }
+    p { color:var(--muted); line-height:1.55; }
+    a { display:inline-block; margin-top:18px; padding:15px 22px; border-radius:14px; color:#fff; background:var(--coral); font-size:16px; font-weight:700; text-decoration:none; }
+    .observacao { margin-top:22px; font-size:13px; }
+    [hidden] { display:none; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="marca">ConfirmaAi</div>
+    <h1>Você recebeu um convite para a equipe</h1>
+    <p id="mensagem">Toque no botão abaixo para abrir o convite no aplicativo ConfirmaAi.</p>
+    <a id="abrir" href="#">Abrir no ConfirmaAi</a>
+    <p class="observacao">Se o aplicativo ainda não estiver instalado, instale-o e abra este link novamente.</p>
+  </main>
+  <script>
+    const parametros = new URLSearchParams(location.search);
+    const token = (parametros.get('token') || '').trim();
+    const botao = document.getElementById('abrir');
+    const mensagem = document.getElementById('mensagem');
+
+    if (!token) {
+      botao.hidden = true;
+      mensagem.textContent = 'Este convite está incompleto. Peça um novo link ao responsável pelo evento.';
+    } else {
+      const linkApp = `br.com.appcasamento://convite-funcionario?token=${encodeURIComponent(token)}`;
+      botao.href = linkApp;
+
+      if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+        window.setTimeout(() => { window.location.href = linkApp; }, 450);
+      }
+    }
+  </script>
+</body>
+</html>

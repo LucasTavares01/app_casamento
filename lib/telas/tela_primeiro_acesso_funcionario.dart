@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../servicos/convite_funcionario_link_servico.dart';
 import '../servicos/sessao_servico.dart';
 import 'tela_casamentos.dart';
 
@@ -25,6 +26,10 @@ class _TelaPrimeiroAcessoFuncionarioState
   bool _processando = false;
   bool _abrindoProximaTela = false;
   bool _ocultarSenha = true;
+  bool _carregandoConvite = true;
+  bool _tentativaGoogleAgendada = false;
+  String _emailConvite = '';
+  String _nomeConvite = '';
   String? _erro;
 
   @override
@@ -40,8 +45,33 @@ class _TelaPrimeiroAcessoFuncionarioState
         });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_carregarDadosConvite());
       unawaited(_tentarConcluirGoogle(silencioso: true));
     });
+  }
+
+  Future<void> _carregarDadosConvite() async {
+    try {
+      final dados = await SessaoServico.instance.obterDadosConviteFuncionario();
+      if (!mounted) return;
+      setState(() {
+        _emailConvite = dados.email;
+        _nomeConvite = dados.nome;
+        _carregandoConvite = false;
+      });
+    } on AuthException catch (erro) {
+      if (!mounted) return;
+      setState(() {
+        _carregandoConvite = false;
+        _erro = erro.message;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _carregandoConvite = false;
+        _erro = 'Não foi possível carregar os dados do convite.';
+      });
+    }
   }
 
   @override
@@ -63,13 +93,26 @@ class _TelaPrimeiroAcessoFuncionarioState
   Future<void> _vincularGoogle() async {
     if (_processando) return;
 
+    if (!_emailConvite.toLowerCase().endsWith('@gmail.com')) {
+      setState(() {
+        _erro = 'Este convite deve ser concluído criando uma senha.';
+      });
+      return;
+    }
+
     setState(() {
       _processando = true;
       _erro = null;
     });
 
     try {
-      await SessaoServico.instance.vincularGoogleAoConvite();
+      final concluiNaSessaoAtual =
+          await SessaoServico.instance.vincularGoogleAoConvite();
+      if (concluiNaSessaoAtual) {
+        final concluido =
+            await SessaoServico.instance.concluirVinculoGooglePendente();
+        if (mounted && concluido) _abrirCasamentos();
+      }
     } on AuthException catch (erro) {
       if (!mounted) return;
       setState(() => _erro = _mensagemErroGoogle(erro.message));
@@ -86,7 +129,17 @@ class _TelaPrimeiroAcessoFuncionarioState
   }
 
   Future<void> _tentarConcluirGoogle({required bool silencioso}) async {
-    if (_processando || _abrindoProximaTela || !mounted) return;
+    if (_abrindoProximaTela || !mounted) return;
+
+    if (_processando) {
+      if (_tentativaGoogleAgendada) return;
+      _tentativaGoogleAgendada = true;
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      _tentativaGoogleAgendada = false;
+      if (!mounted || _abrindoProximaTela) return;
+      unawaited(_tentarConcluirGoogle(silencioso: silencioso));
+      return;
+    }
 
     final haviaVinculoPendente =
         await SessaoServico.instance.possuiVinculoGooglePendente();
@@ -138,7 +191,13 @@ class _TelaPrimeiroAcessoFuncionarioState
     });
 
     try {
-      await SessaoServico.instance.definirSenhaInicial(_senhaController.text);
+      if (ConviteFuncionarioLinkServico.instance.possuiTokenPendente) {
+        await SessaoServico.instance.concluirConviteFuncionarioComSenha(
+          _senhaController.text,
+        );
+      } else {
+        await SessaoServico.instance.definirSenhaInicial(_senhaController.text);
+      }
       if (!mounted) return;
       _abrirCasamentos();
     } on AuthException catch (erro) {
@@ -179,8 +238,14 @@ class _TelaPrimeiroAcessoFuncionarioState
   @override
   Widget build(BuildContext context) {
     final sessao = SessaoServico.instance;
-    final nome = sessao.nomeExibicaoAtual.trim();
-    final email = sessao.emailAtual.trim();
+    final nome = (_nomeConvite.isNotEmpty
+            ? _nomeConvite
+            : sessao.nomeExibicaoAtual)
+        .trim();
+    final email = (_emailConvite.isNotEmpty ? _emailConvite : sessao.emailAtual)
+        .trim();
+    final ehGmail = email.toLowerCase().endsWith('@gmail.com');
+    final deveCriarSenha = !_carregandoConvite && email.isNotEmpty;
 
     return PopScope(
       canPop: false,
@@ -236,29 +301,43 @@ class _TelaPrimeiroAcessoFuncionarioState
                                 children: [
                                   const Icon(Icons.email_outlined, size: 18),
                                   const SizedBox(width: 8),
-                                  Expanded(child: Text(email)),
+                                  Expanded(
+                                    child: Text(
+                                      _carregandoConvite
+                                          ? 'Carregando e-mail do convite...'
+                                          : email,
+                                    ),
+                                  ),
                                 ],
                               ),
                             ],
                           ),
                         ),
                       ),
-                      const SizedBox(height: 20),
-                      SizedBox(
-                        height: 50,
-                        child: OutlinedButton.icon(
-                          onPressed: _processando ? null : _vincularGoogle,
-                          icon: const Text(
-                            'G',
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF4285F4),
+                      if (ehGmail) ...[
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          height: 50,
+                          child: OutlinedButton.icon(
+                            onPressed: _processando ? null : _vincularGoogle,
+                            icon: const Text(
+                              'G',
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF4285F4),
+                              ),
                             ),
+                            label: const Text('Entrar com Google'),
                           ),
-                          label: const Text('Criar acesso com Google'),
                         ),
-                      ),
+                        const SizedBox(height: 14),
+                        const Text(
+                          'Use a mesma conta Google deste convite ou crie uma senha abaixo.',
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                      if (deveCriarSenha) ...[
                       const SizedBox(height: 20),
                       const Row(
                         children: [
@@ -314,17 +393,6 @@ class _TelaPrimeiroAcessoFuncionarioState
                             ? null
                             : 'As senhas não são iguais.',
                       ),
-                      if (_erro != null) ...[
-                        const SizedBox(height: 14),
-                        Text(
-                          _erro!,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: Colors.red,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
                       const SizedBox(height: 22),
                       SizedBox(
                         height: 50,
@@ -346,6 +414,18 @@ class _TelaPrimeiroAcessoFuncionarioState
                           ),
                         ),
                       ),
+                      ],
+                      if (_erro != null) ...[
+                        const SizedBox(height: 14),
+                        Text(
+                          _erro!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.red,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),

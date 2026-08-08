@@ -240,6 +240,11 @@ content_path = "./supabase/templates/invite.html"
 subject = "Seu acesso ao ConfirmaAi está pronto"
 content_path = "./supabase/templates/magic_link.html"
 
+# A tela de primeiro acesso ainda não possui sessão; ela envia o token próprio
+# do convite e só recebe uma sessão depois que o servidor valida esse token.
+[functions.concluir-convite-funcionario]
+verify_jwt = false
+
 # Uncomment to customize notification email template
 # [auth.email.notification.password_changed]
 # enabled = true

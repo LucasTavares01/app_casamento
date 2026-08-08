@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../banco/banco_instancia.dart';
 import '../banco/banco_local.dart';
 import 'casamento_atual_servico.dart';
+import 'convite_funcionario_link_servico.dart';
 import 'realtime_servico.dart';
 
 enum SituacaoContaCerimonialista {
@@ -19,6 +20,15 @@ class ResultadoContaCerimonialista {
   final SituacaoContaCerimonialista situacao;
 
   const ResultadoContaCerimonialista(this.situacao);
+}
+
+class DadosConviteFuncionario {
+  final String email;
+  final String nome;
+
+  const DadosConviteFuncionario({required this.email, required this.nome});
+
+  bool get ehGmail => email.toLowerCase().endsWith('@gmail.com');
 }
 
 /// Autenticação da conta pelo Supabase Auth.
@@ -37,10 +47,14 @@ class SessaoServico {
       'vinculo_google_convite_pendente_em';
   static const String _chavePerfilCerimonialistaGooglePendente =
       'perfil_cerimonialista_google_pendente_em';
+  static const String _chaveCadastroCerimonialistaPendente =
+      'cadastro_cerimonialista_pendente_em';
   static const Duration _validadeLoginGooglePendente = Duration(minutes: 15);
   static const Duration _validadeVinculoGooglePendente = Duration(minutes: 15);
   static const Duration _validadePerfilCerimonialistaGooglePendente =
       Duration(minutes: 15);
+  static const Duration _validadeCadastroCerimonialistaPendente =
+      Duration(minutes: 30);
 
   final BancoLocal _banco = bancoLocal;
   final SupabaseClient _supabase = Supabase.instance.client;
@@ -158,6 +172,46 @@ class SessaoServico {
     }
     _usuarioAutenticado = usuario;
 
+    final perfilCerimonialistaGooglePendente =
+        await possuiPerfilCerimonialistaGooglePendente();
+    final cadastroCerimonialistaPendente =
+        await possuiCadastroCerimonialistaPendente();
+
+    if (resultadoUsuario.validadoOnline) {
+      var papeis =
+          await CasamentoAtualServico.instance.obterPapeisContaAtual();
+
+      if (!papeis.cerimonialista && !papeis.funcionario) {
+        if (cadastroCerimonialistaPendente &&
+            !perfilCerimonialistaGooglePendente) {
+          // A criação de uma conta administrativa só pode ocorrer quando o
+          // usuário iniciou explicitamente esse fluxo na tela de cadastro.
+          await _garantirOrganizacaoComTentativas();
+          papeis =
+              await CasamentoAtualServico.instance.obterPapeisContaAtual();
+          if (papeis.cerimonialista || papeis.funcionario) {
+            await limparCadastroCerimonialistaPendente();
+          }
+        } else if (perfilCerimonialistaGooglePendente) {
+          // O fluxo Google ainda precisa passar pela confirmação explícita na
+          // porta de entrada. Não crie perfil nem abra a conta neste ponto.
+          return;
+        } else {
+          // A sessão do Auth sobreviveu, mas a conta não possui mais perfil
+          // público. Isso acontece, por exemplo, depois de zerar o banco.
+          // Não recrie uma organização automaticamente e não abra dados
+          // antigos armazenados no aparelho.
+          await _encerrarSessaoSemPerfilPublico();
+          return;
+        }
+
+        if (!papeis.cerimonialista && !papeis.funcionario) {
+          await _encerrarSessaoSemPerfilPublico();
+          return;
+        }
+      }
+    }
+
     final nome = _nomeDoUsuario(usuario);
     final agora = DateTime.now().toUtc();
 
@@ -184,13 +238,6 @@ class SessaoServico {
       throw const ValidacaoSessaoIndisponivelException(
         'Não foi possível validar a sessão pela internet agora.',
       );
-    }
-
-    final perfilCerimonialistaGooglePendente =
-        await possuiPerfilCerimonialistaGooglePendente();
-
-    if (!perfilCerimonialistaGooglePendente) {
-      await _garantirOrganizacaoComTentativas();
     }
 
     await RealtimeServico.instance.inicializar();
@@ -262,6 +309,11 @@ class SessaoServico {
         );
       }
 
+      // O marcador autoriza a criação administrativa somente para este fluxo
+      // explícito. Sem ele, um login comum nunca poderá recriar a conta após
+      // uma limpeza das tabelas públicas.
+      await _marcarCadastroCerimonialistaPendente();
+
       final resposta = await _supabase.auth.signUp(
         email: emailNormalizado,
         password: senha,
@@ -280,15 +332,18 @@ class SessaoServico {
       }
 
       await habilitarPerfilCerimonialista(nome: nomeNormalizado);
+      await limparCadastroCerimonialistaPendente();
       return const ResultadoContaCerimonialista(
         SituacaoContaCerimonialista.novaConta,
       );
     } on AuthException catch (erro) {
       if (_erroIndicaContaExistente(erro)) {
+        await limparCadastroCerimonialistaPendente();
         return const ResultadoContaCerimonialista(
           SituacaoContaCerimonialista.contaExistenteSemPerfilCerimonialista,
         );
       }
+      await limparCadastroCerimonialistaPendente();
       rethrow;
     }
   }
@@ -453,71 +508,215 @@ class SessaoServico {
         .go();
   }
 
+  Future<bool> possuiCadastroCerimonialistaPendente() async {
+    return _possuiMarcadorPendente(
+      chave: _chaveCadastroCerimonialistaPendente,
+      validade: _validadeCadastroCerimonialistaPendente,
+    );
+  }
+
+  Future<void> limparCadastroCerimonialistaPendente() async {
+    await (_banco.delete(_banco.configuracoesLocais)
+          ..where(
+            (tabela) => tabela.chave.equals(
+              _chaveCadastroCerimonialistaPendente,
+            ),
+          ))
+        .go();
+  }
+
   /// Vincula uma conta Google à conta criada pelo convite.
   ///
-  /// O usuário já está autenticado pelo link recebido por e-mail. Por isso,
-  /// este fluxo não encerra a sessão atual: ele adiciona o Google como uma
-  /// nova forma de entrar na mesma conta de funcionário.
-  Future<void> vincularGoogleAoConvite() async {
-    if (_supabase.auth.currentSession == null ||
-        !precisaConcluirPrimeiroAcessoFuncionario) {
+  /// Quando o convite já abriu uma sessão, adiciona o Google à conta existente.
+  /// Quando o link veio pelo WhatsApp, inicia um login Google novo; o servidor
+  /// transfere o convite para essa conta depois de validar o e-mail.
+  Future<bool> vincularGoogleAoConvite() async {
+    final convite = await obterDadosConviteFuncionario();
+    if (!convite.ehGmail) {
       throw const AuthException(
-        'O convite não está disponível para vincular uma conta Google.',
+        'Este convite deve ser concluído criando uma senha.',
       );
+    }
+
+    final usuarioAtual = _supabase.auth.currentUser;
+    final possuiSessaoDoConvite =
+        usuarioAtual != null &&
+        _normalizarEmail(usuarioAtual.email ?? '') == convite.email;
+
+    if (!possuiSessaoDoConvite && _supabase.auth.currentSession != null) {
+      await prepararNovaAutenticacao();
     }
 
     await _marcarVinculoGooglePendente();
 
     try {
-      await _supabase.auth.linkIdentity(
-        OAuthProvider.google,
-        redirectTo: kIsWeb ? null : 'br.com.appcasamento://login-callback',
-        authScreenLaunchMode: kIsWeb
-            ? LaunchMode.platformDefault
-            : LaunchMode.externalApplication,
-        queryParams: const {'prompt': 'select_account'},
-      );
+      if (possuiSessaoDoConvite) {
+        final possuiGoogleVinculado = (_supabase.auth.currentUser?.identities ??
+                const <UserIdentity>[])
+            .any((identidade) =>
+                identidade.provider == OAuthProvider.google.name);
+
+        if (possuiGoogleVinculado) {
+          // O funcionário pode ter entrado diretamente com o Google antes de
+          // abrir o convite. Nesse caso não há outro OAuth para iniciar: a
+          // confirmação do convite será feita pelo chamador nesta mesma tela.
+          return true;
+        }
+
+        await _supabase.auth.linkIdentity(
+          OAuthProvider.google,
+          redirectTo: kIsWeb ? null : 'br.com.appcasamento://login-callback',
+          authScreenLaunchMode: kIsWeb
+              ? LaunchMode.platformDefault
+              : LaunchMode.externalApplication,
+          queryParams: const {'prompt': 'select_account'},
+        );
+      } else {
+        await _supabase.auth.signInWithOAuth(
+          OAuthProvider.google,
+          redirectTo: kIsWeb ? null : 'br.com.appcasamento://login-callback',
+          authScreenLaunchMode: kIsWeb
+              ? LaunchMode.platformDefault
+              : LaunchMode.externalApplication,
+          queryParams: const {'prompt': 'select_account'},
+        );
+      }
+      return false;
     } catch (_) {
       await limparVinculoGooglePendente();
       rethrow;
     }
   }
 
-  /// Finaliza o primeiro acesso depois que o navegador retorna do Google.
-  /// Retorna `true` somente quando a identidade Google já estiver vinculada.
-  Future<bool> concluirVinculoGooglePendente() async {
-    if (!await possuiVinculoGooglePendente()) return false;
-    if (_supabase.auth.currentSession == null) {
-      await limparVinculoGooglePendente();
+  /// Procura um convite pendente para o usuário que acabou de autenticar.
+  ///
+  /// Isso cobre o caso em que o funcionário ignora o e-mail/WhatsApp e entra
+  /// diretamente com o Google. A Edge Function só consulta o convite depois
+  /// de validar a sessão autenticada e devolve um novo token próprio para o
+  /// primeiro acesso.
+  Future<bool> prepararConviteFuncionarioPendenteDoUsuarioAutenticado() async {
+    if (_supabase.auth.currentSession == null ||
+        _supabase.auth.currentUser == null) {
       return false;
     }
 
-    for (var tentativa = 0; tentativa < 8; tentativa++) {
-      final identidades = await _supabase.auth.getUserIdentities();
-      final possuiGoogle = identidades.any(
-        (identidade) => identidade.provider.toLowerCase() == 'google',
+    try {
+      final resposta = await _supabase.functions.invoke(
+        'concluir-convite-funcionario',
+        body: const {'acao': 'pendente'},
       );
-
-      if (possuiGoogle) {
-        await _supabase.auth.updateUser(
-          UserAttributes(
-            data: const {
-              'precisa_definir_senha': false,
-              'criar_organizacao': false,
-              'cadastro_concluido': true,
-            },
-          ),
-        );
-        await limparVinculoGooglePendente();
-        await sincronizarUsuarioAutenticado();
-        return true;
+      final dados = resposta.data;
+      if (resposta.status < 200 || resposta.status >= 300 || dados is! Map) {
+        return false;
       }
 
-      await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (dados['pendente'] != true) return false;
+      final token = (dados['token'] as String?)?.trim() ?? '';
+      if (token.isEmpty) return false;
+
+      await ConviteFuncionarioLinkServico.instance.definirToken(token);
+      return true;
+    } catch (erro) {
+      debugPrint('Não foi possível verificar convite pendente: $erro');
+      return false;
+    }
+  }
+
+  Future<DadosConviteFuncionario> obterDadosConviteFuncionario() async {
+    final token = ConviteFuncionarioLinkServico.instance.tokenPendente;
+    if (token == null || token.isEmpty) {
+      throw const AuthException('O convite não está disponível neste aparelho.');
+    }
+
+    final resposta = await _supabase.functions.invoke(
+      'concluir-convite-funcionario',
+      body: {'token': token, 'acao': 'dados'},
+    );
+    final dados = resposta.data;
+    if (resposta.status < 200 || resposta.status >= 300 || dados is! Map) {
+      final mensagem = dados is Map ? dados['mensagem'] : null;
+      throw AuthException(
+        mensagem is String && mensagem.isNotEmpty
+            ? mensagem
+            : 'Não foi possível carregar os dados do convite.',
+      );
+    }
+
+    final email = (dados['email'] as String?)?.trim().toLowerCase() ?? '';
+    final nome = (dados['nome'] as String?)?.trim() ?? '';
+    if (email.isEmpty) {
+      throw const AuthException('O convite não informou um e-mail válido.');
+    }
+
+    return DadosConviteFuncionario(email: email, nome: nome);
+  }
+
+  /// Finaliza o primeiro acesso depois que o navegador retorna do Google.
+  /// Retorna `true` somente quando o servidor aceitar o convite para a conta.
+  Future<bool> concluirVinculoGooglePendente() async {
+    String? token;
+    for (var tentativa = 0; tentativa < 6; tentativa++) {
+      final marcadorPendente = await possuiVinculoGooglePendente();
+      token = ConviteFuncionarioLinkServico.instance.tokenPendente;
+      final sessaoDisponivel = _supabase.auth.currentSession != null;
+
+      if (marcadorPendente &&
+          sessaoDisponivel &&
+          token != null &&
+          token.isNotEmpty) {
+        break;
+      }
+
+      if (tentativa == 5) {
+        if (!marcadorPendente) return false;
+        await limparVinculoGooglePendente();
+        return false;
+      }
+
+      // O retorno do navegador e o evento signedIn podem chegar alguns
+      // instantes antes de o SDK disponibilizar a sessão/token local.
+      await Future<void>.delayed(
+        Duration(milliseconds: 250 * (tentativa + 1)),
+      );
+    }
+
+    var resposta = await _supabase.functions.invoke(
+      'concluir-convite-funcionario',
+      body: {'token': token, 'acao': 'google'},
+    );
+    for (var tentativa = 0; tentativa < 3; tentativa++) {
+      final erroTemporario =
+          resposta.status == 409 || resposta.status >= 500;
+      if (!erroTemporario ||
+          (resposta.status >= 200 && resposta.status < 300)) {
+        break;
+      }
+
+      // A conta/identidade Google pode levar alguns instantes para ficar
+      // visível para a Edge Function logo após o retorno do navegador.
+      await Future<void>.delayed(
+        Duration(milliseconds: 400 * (tentativa + 1)),
+      );
+      resposta = await _supabase.functions.invoke(
+        'concluir-convite-funcionario',
+        body: {'token': token, 'acao': 'google'},
+      );
+    }
+    final dados = resposta.data;
+    if (resposta.status < 200 || resposta.status >= 300 || dados is! Map) {
+      final mensagem = dados is Map ? dados['mensagem'] : null;
+      throw AuthException(
+        mensagem is String && mensagem.isNotEmpty
+            ? mensagem
+            : 'Não foi possível concluir o acesso com Google.',
+      );
     }
 
     await limparVinculoGooglePendente();
-    return false;
+    await ConviteFuncionarioLinkServico.instance.limpar();
+    await _supabase.auth.getUser();
+    await sincronizarUsuarioAutenticado();
+    return true;
   }
 
   Future<void> enviarRecuperacaoDeSenha(String email) {
@@ -534,6 +733,43 @@ class SessaoServico {
         data: const {'precisa_definir_senha': false},
       ),
     );
+    await sincronizarUsuarioAutenticado();
+  }
+
+  /// Conclui um convite próprio do ConfirmaAi sem depender de uma sessão OTP
+  /// aberta pelo navegador. O servidor valida o token e só então cria a
+  /// sessão normal por e-mail e senha.
+  Future<void> concluirConviteFuncionarioComSenha(String senha) async {
+    final token = ConviteFuncionarioLinkServico.instance.tokenPendente;
+    if (token == null || token.isEmpty) {
+      throw const AuthException('O convite não está disponível neste aparelho.');
+    }
+
+    final resposta = await _supabase.functions.invoke(
+      'concluir-convite-funcionario',
+      body: {'token': token, 'acao': 'senha', 'senha': senha},
+    );
+    final dados = resposta.data;
+    if (resposta.status < 200 || resposta.status >= 300 || dados is! Map) {
+      final mensagem = dados is Map ? dados['mensagem'] : null;
+      throw AuthException(
+        mensagem is String && mensagem.isNotEmpty
+            ? mensagem
+            : 'Não foi possível concluir o convite.',
+      );
+    }
+
+    final email = (dados['email'] as String?)?.trim() ?? '';
+    if (email.isEmpty) {
+      throw const AuthException('O convite não informou um e-mail válido.');
+    }
+
+    await prepararNovaAutenticacao();
+    await _supabase.auth.signInWithPassword(
+      email: _normalizarEmail(email),
+      password: senha,
+    );
+    await ConviteFuncionarioLinkServico.instance.limpar();
     await sincronizarUsuarioAutenticado();
   }
 
@@ -575,6 +811,7 @@ class SessaoServico {
     await limparLoginGooglePendente();
     await limparVinculoGooglePendente();
     await limparPerfilCerimonialistaGooglePendente();
+    await limparCadastroCerimonialistaPendente();
     await RealtimeServico.instance.encerrar();
     _usuarioAtual = null;
     _usuarioAutenticado = null;
@@ -591,6 +828,7 @@ class SessaoServico {
     await limparLoginGooglePendente();
     await limparVinculoGooglePendente();
     await limparPerfilCerimonialistaGooglePendente();
+    await limparCadastroCerimonialistaPendente();
     await RealtimeServico.instance.encerrar();
     _usuarioAtual = null;
     _usuarioAutenticado = null;
@@ -646,6 +884,10 @@ class SessaoServico {
     return _salvarMarcadorPendente(
       _chavePerfilCerimonialistaGooglePendente,
     );
+  }
+
+  Future<void> _marcarCadastroCerimonialistaPendente() {
+    return _salvarMarcadorPendente(_chaveCadastroCerimonialistaPendente);
   }
 
   Future<void> _salvarMarcadorPendente(String chave) async {
@@ -710,6 +952,21 @@ class SessaoServico {
         _controladorSessaoRevogada.add(
           'Sua conta foi excluída e o acesso foi encerrado neste aparelho.',
         );
+      }
+    }
+  }
+
+  Future<void> _encerrarSessaoSemPerfilPublico() async {
+    try {
+      await _limparTodosOsDadosLocais();
+    } finally {
+      await RealtimeServico.instance.encerrar();
+      _usuarioAtual = null;
+      _usuarioAutenticado = null;
+      try {
+        await _supabase.auth.signOut(scope: SignOutScope.local);
+      } catch (erro) {
+        debugPrint('Sessão sem perfil público descartada localmente: $erro');
       }
     }
   }

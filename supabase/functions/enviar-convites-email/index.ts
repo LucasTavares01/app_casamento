@@ -33,6 +33,14 @@ Deno.serve(async (request) => {
     const convidadoIds = Array.isArray(body?.convidado_ids)
       ? body.convidado_ids.map((value: unknown) => clean(value)).filter(Boolean)
       : [];
+    const forcarReenvio = body?.forcar_reenvio === true;
+
+    if (forcarReenvio && convidadoIds.length !== 1) {
+      return json(
+        { mensagem: "O reenvio deve ser feito para um convidado por vez." },
+        400,
+      );
+    }
 
     if (!casamentoId) {
       return json({ mensagem: "Evento não informado." }, 400);
@@ -44,10 +52,11 @@ Deno.serve(async (request) => {
       Deno.env.get("SUPABASE_ANON_KEY") ||
       Deno.env.get("SUPABASE_PUBLISHABLE_KEY");
     const token = getBearerToken(request);
-    const resendKey = Deno.env.get("RESEND_API_KEY");
+    const gmailClientId = Deno.env.get("GMAIL_CLIENT_ID");
+    const gmailClientSecret = Deno.env.get("GMAIL_CLIENT_SECRET");
+    const gmailRefreshToken = Deno.env.get("GMAIL_REFRESH_TOKEN");
     const fromEmail =
-      Deno.env.get("CONVITES_FROM_EMAIL") ||
-      Deno.env.get("RESEND_FROM_EMAIL");
+      clean(Deno.env.get("GMAIL_FROM_EMAIL")) || "appcasamentoweb@gmail.com";
 
     if (!supabaseUrl || !serviceRoleKey || !anonKey) {
       return json(
@@ -56,11 +65,11 @@ Deno.serve(async (request) => {
       );
     }
 
-    if (!resendKey || !fromEmail) {
+    if (!gmailClientId || !gmailClientSecret || !gmailRefreshToken) {
       return json(
         {
           mensagem:
-            "Configure RESEND_API_KEY e um segredo de remetente (CONVITES_FROM_EMAIL ou RESEND_FROM_EMAIL) na Edge Function.",
+            "Configure GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET e GMAIL_REFRESH_TOKEN na Edge Function.",
         },
         503,
       );
@@ -121,6 +130,24 @@ Deno.serve(async (request) => {
       return json({ mensagem: "Não foi possível carregar os convites." }, 500);
     }
 
+    let gmailAccessToken: string;
+    try {
+      gmailAccessToken = await obterTokenGmail({
+        clientId: gmailClientId,
+        clientSecret: gmailClientSecret,
+        refreshToken: gmailRefreshToken,
+      });
+    } catch (error) {
+      console.error("Erro na autorização do Gmail", error);
+      return json(
+        {
+          mensagem:
+            "O Gmail não está autorizado para o envio. Revise os segredos OAuth da Edge Function.",
+        },
+        503,
+      );
+    }
+
     const convitePorConvidado = new Map<string, Record<string, unknown>>();
     for (const convite of convites ?? []) {
       convitePorConvidado.set(String(convite.convidado_id), convite);
@@ -149,7 +176,7 @@ Deno.serve(async (request) => {
         continue;
       }
 
-      if (["confirmado", "recusado"].includes(status)) {
+      if (["confirmado", "recusado"].includes(status) && !forcarReenvio) {
         ignorados.push({
           convidado_id: id,
           nome,
@@ -159,7 +186,7 @@ Deno.serve(async (request) => {
         continue;
       }
 
-      if (canais.includes("email")) {
+      if (canais.includes("email") && !forcarReenvio) {
         ignorados.push({
           convidado_id: id,
           nome,
@@ -192,12 +219,11 @@ Deno.serve(async (request) => {
         links.push({ convidado_id: id, convite_id: conviteId, link });
 
         const mensagem = montarMensagem(nome, clean(evento.titulo), link);
-        const emailResponse = await enviarResend({
-          apiKey: resendKey,
+        const emailResponse = await enviarGmail({
+          accessToken: gmailAccessToken,
           from: fromEmail,
           to: email,
           subject: `Convite para ${clean(evento.titulo) || "o evento"}`,
-          text: mensagem.texto,
           html: mensagem.html,
         });
 
@@ -212,9 +238,10 @@ Deno.serve(async (request) => {
             canais_enviados: canaisAtualizados,
             ultimo_canal: "email",
             enviado_em: new Date().toISOString(),
-            status: status === "confirmado" || status === "recusado"
-              ? status
-              : "enviado",
+            status: "enviado",
+            ...(forcarReenvio
+              ? { resposta: null, respondido_em: null }
+              : {}),
           })
           .eq("id", conviteId);
 
@@ -226,11 +253,14 @@ Deno.serve(async (request) => {
 
         enviados.push({ convidado_id: id, convite_id: conviteId, nome, email, link });
       } catch (error) {
+        const mensagemErro =
+          error instanceof Error ? error.message : "Falha no envio.";
+        console.error(`Falha no convite ${id} (${email}): ${mensagemErro}`);
         falhas.push({
           convidado_id: id,
           nome,
           email,
-          erro: error instanceof Error ? error.message : "Falha no envio.",
+          erro: mensagemErro,
         });
       }
     }
@@ -301,28 +331,67 @@ async function validarAdmin(
   return { valid: true, mensagem: "ok", status: 200 };
 }
 
-async function enviarResend(input: {
-  apiKey: string;
+async function obterTokenGmail(input: {
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+}): Promise<string> {
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: input.clientId,
+      client_secret: input.clientSecret,
+      refresh_token: input.refreshToken,
+      grant_type: "refresh_token",
+    }),
+  });
+
+  const body = await response.text();
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    // Mantém a mensagem genérica para não expor dados do OAuth.
+  }
+
+  const accessToken = clean(parsed.access_token);
+  if (!response.ok || !accessToken) {
+    throw new Error("O refresh token do Gmail foi recusado ou expirou.");
+  }
+
+  return accessToken;
+}
+
+async function enviarGmail(input: {
+  accessToken: string;
   from: string;
   to: string;
   subject: string;
-  text: string;
   html: string;
 }): Promise<{ ok: boolean; erro?: string }> {
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${input.apiKey}`,
-      "Content-Type": "application/json",
+  const raw = [
+    `From: ConfirmaAi <${input.from}>`,
+    `To: ${input.to}`,
+    `Subject: =?UTF-8?B?${base64Encode(input.subject)}?=`,
+    "MIME-Version: 1.0",
+    'Content-Type: text/html; charset="UTF-8"',
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    input.html,
+  ].join("\r\n");
+
+  const response = await fetch(
+    "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ raw: base64UrlEncode(raw) }),
     },
-    body: JSON.stringify({
-      from: input.from,
-      to: [input.to],
-      subject: input.subject,
-      text: input.text,
-      html: input.html,
-    }),
-  });
+  );
 
   if (response.ok) {
     return { ok: true };
@@ -331,10 +400,28 @@ async function enviarResend(input: {
   const body = await response.text();
   try {
     const parsed = JSON.parse(body);
-    return { ok: false, erro: clean(parsed?.message) || "Resend recusou o e-mail." };
+    const detalhe = isRecord(parsed?.error) ? clean(parsed.error.message) : "";
+    return {
+      ok: false,
+      erro: detalhe || "O Gmail recusou o e-mail.",
+    };
   } catch {
-    return { ok: false, erro: body || "Resend recusou o e-mail." };
+    return { ok: false, erro: body || "O Gmail recusou o e-mail." };
   }
+}
+
+function base64UrlEncode(value: string): string {
+  return base64Encode(value)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+}
+
+function base64Encode(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 function montarMensagem(nome: string, evento: string, link: string) {

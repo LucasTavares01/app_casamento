@@ -1160,14 +1160,26 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
       length: 2,
       child: Column(
         children: [
-          const TabBar(
-            tabs: [
-              Tab(text: 'RECEPÇÃO', icon: Icon(Icons.how_to_reg)),
-              Tab(
-                text: 'CONVITES ONLINE',
-                icon: Icon(Icons.mark_email_unread_outlined),
-              ),
-            ],
+          SizedBox(
+            height: 58,
+            child: TabBar(
+              labelPadding: EdgeInsets.zero,
+              indicatorPadding: EdgeInsets.zero,
+              tabs: [
+                Tab(
+                  height: 58,
+                  iconMargin: EdgeInsets.zero,
+                  icon: Icon(Icons.how_to_reg, size: 25),
+                  text: 'RECEPÇÃO',
+                ),
+                Tab(
+                  height: 58,
+                  iconMargin: EdgeInsets.zero,
+                  icon: Icon(Icons.mail_outline, size: 25),
+                  text: 'CONVITES ONLINE',
+                ),
+              ],
+            ),
           ),
           Expanded(
             child: TabBarView(

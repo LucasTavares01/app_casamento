@@ -14,10 +14,12 @@ class TelaImportacaoLista extends StatefulWidget {
   State<TelaImportacaoLista> createState() => _TelaImportacaoListaState();
 }
 
-class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
+class _TelaImportacaoListaState extends State<TelaImportacaoLista>
+    with WidgetsBindingObserver {
   final ImportacaoListaServico _servico = ImportacaoListaServico.instance;
 
   ResultadoPreviaImportacao? _resultado;
+  ArquivoListaSelecionado? _arquivoSelecionado;
   String? _erro;
   String? _erroPublicacao;
   bool _analisando = false;
@@ -27,6 +29,9 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
   DateTime? _inicioAnalise;
   Duration _tempoAnalisando = Duration.zero;
   String _mensagemCarregamento = 'Preparando sua lista…';
+  bool _appEmSegundoPlano = false;
+  bool _analisePassouEmSegundoPlano = false;
+  bool _retomarAnaliseAoVoltar = false;
 
   bool get _analiseDemorada => _tempoAnalisando.inSeconds >= 45;
   bool get _podeSairDuranteAnalise => _tempoAnalisando.inSeconds >= 90;
@@ -34,7 +39,27 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     unawaited(_atualizarEstadoDaLista());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      if (_analisando) _analisePassouEmSegundoPlano = true;
+      _appEmSegundoPlano = true;
+      return;
+    }
+
+    if (state != AppLifecycleState.resumed) return;
+    _appEmSegundoPlano = false;
+
+    if (_retomarAnaliseAoVoltar && _arquivoSelecionado != null) {
+      _retomarAnaliseAoVoltar = false;
+      _analisando = false;
+      unawaited(_analisarArquivoSelecionado());
+    }
   }
 
   Future<void> _atualizarEstadoDaLista() async {
@@ -60,24 +85,70 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _carregamentoTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _selecionarEAnalisar() async {
-    await _executarAnalise(_servico.selecionarEAnalisarArquivo);
+  Future<void> _selecionarArquivo() async {
+    if (_analisando || _publicando) return;
+
+    try {
+      final arquivo = await _servico.selecionarArquivo();
+      if (!mounted || arquivo == null) return;
+
+      setState(() {
+        _arquivoSelecionado = arquivo;
+        _resultado = null;
+        _erro = null;
+        _erroPublicacao = null;
+      });
+    } on ImportacaoListaException catch (erro) {
+      if (mounted) setState(() => _erro = erro.mensagem);
+    } catch (erro) {
+      if (mounted) setState(() => _erro = 'Não foi possível selecionar o arquivo: $erro');
+    }
   }
 
-  Future<void> _tirarFotoEAnalisar() async {
-    await _executarAnalise(_servico.tirarFotoEAnalisar);
+  Future<void> _tirarFoto() async {
+    if (_analisando || _publicando) return;
+
+    try {
+      final arquivo = await _servico.tirarFoto();
+      if (!mounted || arquivo == null) return;
+
+      setState(() {
+        _arquivoSelecionado = arquivo;
+        _resultado = null;
+        _erro = null;
+        _erroPublicacao = null;
+      });
+    } on ImportacaoListaException catch (erro) {
+      if (mounted) setState(() => _erro = erro.mensagem);
+    } catch (erro) {
+      if (mounted) setState(() => _erro = 'Não foi possível obter a foto: $erro');
+    }
+  }
+
+  Future<void> _analisarArquivoSelecionado() async {
+    final arquivo = _arquivoSelecionado;
+    if (_analisando || _publicando || arquivo == null) return;
+
+    await _executarAnalise(() => _servico.analisarArquivo(arquivo));
+  }
+
+  Future<void> _tentarAnaliseNovamente() async {
+    if (_arquivoSelecionado != null) {
+      await _analisarArquivoSelecionado();
+    } else {
+      await _selecionarArquivo();
+    }
   }
 
   Future<void> _executarAnalise(
-    Future<ResultadoPreviaImportacao?> Function() iniciar,
+    Future<ResultadoPreviaImportacao> Function() iniciar,
   ) async {
-    if (_analisando) {
-      return;
-    }
+    if (_analisando) return;
 
     setState(() {
       _analisando = true;
@@ -86,6 +157,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
       _inicioAnalise = DateTime.now();
       _tempoAnalisando = Duration.zero;
       _mensagemCarregamento = 'Preparando sua lista…';
+      _analisePassouEmSegundoPlano = false;
     });
     _carregamentoTimer?.cancel();
     _carregamentoTimer = Timer.periodic(
@@ -96,9 +168,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
     try {
       final resultado = await iniciar();
 
-      if (!mounted || resultado == null) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         _resultado = resultado;
@@ -108,27 +178,47 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
         return;
       }
 
-      setState(() {
-        _erro = erro.mensagem;
-      });
+      if (_appEmSegundoPlano || _analisePassouEmSegundoPlano) {
+        _prepararRetomadaDaAnalise();
+      } else {
+        setState(() => _erro = erro.mensagem);
+      }
     } catch (erro) {
       if (!mounted) {
         return;
       }
 
-      setState(() {
-        _erro = 'Não foi possível analisar o arquivo: $erro';
-      });
+      if (_appEmSegundoPlano || _analisePassouEmSegundoPlano) {
+        _prepararRetomadaDaAnalise();
+      } else {
+        setState(() => _erro = 'Não foi possível analisar o arquivo: $erro');
+      }
     } finally {
       _carregamentoTimer?.cancel();
       _carregamentoTimer = null;
-      if (mounted) {
+      if (mounted && !_retomarAnaliseAoVoltar) {
         setState(() {
           _analisando = false;
           _inicioAnalise = null;
         });
       }
     }
+  }
+
+  void _prepararRetomadaDaAnalise() {
+    _retomarAnaliseAoVoltar = true;
+    _mensagemCarregamento =
+        'A análise será retomada quando você voltar ao aplicativo…';
+
+    if (_appEmSegundoPlano || !mounted) return;
+
+    _retomarAnaliseAoVoltar = false;
+    _analisando = false;
+    unawaited(
+      Future<void>.delayed(const Duration(milliseconds: 300), () {
+        if (mounted) unawaited(_analisarArquivoSelecionado());
+      }),
+    );
   }
 
   void _atualizarCarregamento() {
@@ -478,7 +568,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
                 tooltip: 'Analisar outro arquivo',
                 onPressed: _analisando || _publicando
                     ? null
-                    : _selecionarEAnalisar,
+                    : _selecionarArquivo,
                 icon: const Icon(Icons.upload_file_outlined),
               ),
           ],
@@ -543,8 +633,9 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Estamos preparando uma prévia para você revisar. '
-              'Nenhuma informação será alterada ainda.',
+              'Estamos preparando uma prévia para você revisar. Você pode '
+              'alternar de aplicativo; se o sistema pausar a conexão, '
+              'retomaremos automaticamente quando você voltar.',
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 18),
@@ -573,7 +664,17 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
     );
   }
 
+  String _formatarTamanho(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    }
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
   Widget _construirInicio() {
+    final arquivo = _arquivoSelecionado;
+
     return ListView(
       key: const ValueKey('inicio'),
       padding: const EdgeInsets.all(18),
@@ -605,21 +706,66 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 18),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: _selecionarEAnalisar,
-                    icon: const Icon(Icons.upload_file_outlined),
-                    label: const Text('Escolher arquivo'),
+                if (arquivo == null) ...[
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _selecionarArquivo,
+                      icon: const Icon(Icons.upload_file_outlined),
+                      label: const Text('Escolher arquivo'),
+                    ),
                   ),
-                ),
+                ] else ...[
+                  Card(
+                    color: Theme.of(context).colorScheme.secondaryContainer,
+                    child: ListTile(
+                      leading: const Icon(Icons.insert_drive_file_outlined),
+                      title: Text(
+                        arquivo.nome,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        '${_formatarTamanho(arquivo.tamanhoBytes)} • pronto para enviar',
+                      ),
+                      trailing: IconButton(
+                        tooltip: 'Remover arquivo selecionado',
+                        onPressed: () => setState(() {
+                          _arquivoSelecionado = null;
+                          _erro = null;
+                        }),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _analisarArquivoSelecionado,
+                      icon: const Icon(Icons.cloud_upload_outlined),
+                      label: const Text('Enviar para análise'),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _selecionarArquivo,
+                      icon: const Icon(Icons.upload_file_outlined),
+                      label: const Text('Escolher outro arquivo'),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 10),
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
-                    onPressed: _tirarFotoEAnalisar,
+                    onPressed: _tirarFoto,
                     icon: const Icon(Icons.photo_camera_outlined),
-                    label: const Text('Tirar foto da lista'),
+                    label: Text(
+                      arquivo == null ? 'Tirar foto da lista' : 'Tirar outra foto',
+                    ),
                   ),
                 ),
               ],
@@ -630,7 +776,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
         const _AvisoSeguro(),
         if (_erro != null) ...[
           const SizedBox(height: 12),
-          _CartaoErro(mensagem: _erro!, tentarNovamente: _selecionarEAnalisar),
+          _CartaoErro(mensagem: _erro!, tentarNovamente: _tentarAnaliseNovamente),
         ],
       ],
     );
@@ -703,7 +849,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
         ),
         if (_erro != null) ...[
           const SizedBox(height: 12),
-          _CartaoErro(mensagem: _erro!, tentarNovamente: _selecionarEAnalisar),
+          _CartaoErro(mensagem: _erro!, tentarNovamente: _tentarAnaliseNovamente),
         ],
         if (resultado.avisos.isNotEmpty) ...[
           const SizedBox(height: 12),
@@ -735,7 +881,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista> {
         ],
         const SizedBox(height: 18),
         OutlinedButton.icon(
-          onPressed: _selecionarEAnalisar,
+          onPressed: _selecionarArquivo,
           icon: const Icon(Icons.upload_file_outlined),
           label: const Text('Analisar outro arquivo'),
         ),

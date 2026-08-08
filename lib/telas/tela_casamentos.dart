@@ -706,6 +706,9 @@ class _CardCasamento extends StatelessWidget {
     final finalizado = casamento.status == 'finalizado';
     final arquivado = casamento.status == 'arquivado';
     final somenteLeitura = casamento.encerrado;
+    final identificacaoEvento = casamento.descricaoPessoas.trim().isNotEmpty
+        ? casamento.descricaoPessoas.trim()
+        : casamento.titulo;
 
     return Card(
       clipBehavior: Clip.antiAlias,
@@ -738,23 +741,25 @@ class _CardCasamento extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          casamento.titulo,
-                          style: tema.textTheme.titleLarge?.copyWith(
+                          casamento.tipoEvento.rotulo,
+                          style: tema.textTheme.titleMedium?.copyWith(
                             fontWeight: FontWeight.w700,
                           ),
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          casamento.ehAdmin ? 'Administradora' : 'Funcionário',
-                          style: tema.textTheme.bodySmall?.copyWith(
-                            color: tema.colorScheme.onSurfaceVariant,
+                          identificacaoEvento,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: tema.textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          casamento.tipoEvento.rotulo,
+                          casamento.ehAdmin ? 'Administradora' : 'Funcionário',
                           style: tema.textTheme.bodySmall?.copyWith(
-                            color: tema.colorScheme.primary,
+                            color: tema.colorScheme.onSurfaceVariant,
                           ),
                         ),
                       ],
@@ -806,12 +811,6 @@ class _CardCasamento extends StatelessWidget {
                 rotulo: 'Status',
                 valor: _rotuloStatus(casamento.status),
                 icone: Icons.info_outline,
-              ),
-              const SizedBox(height: 9),
-              _InfoCasamento(
-                rotulo: 'Tipo',
-                valor: casamento.tipoEvento.rotulo,
-                icone: casamento.tipoEvento.icone,
               ),
               if (casamento.descricaoPessoas.isNotEmpty) ...[
                 const SizedBox(height: 9),
@@ -1089,7 +1088,7 @@ String _rotuloStatus(String status) {
     case 'arquivado':
       return 'Arquivado';
     case 'rascunho':
-      return 'Rascunho';
+      return 'Em andamento';
     default:
       return status.isEmpty ? 'Não informado' : status;
   }
@@ -1118,7 +1117,6 @@ class _DialogNovoCasamento extends StatefulWidget {
 
 class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
   final _formKey = GlobalKey<FormState>();
-  late final TextEditingController _titulo;
   late final TextEditingController _pessoas;
   late final TextEditingController _local;
   late TipoEvento _tipo;
@@ -1138,7 +1136,6 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
       existente?.nomePessoa1,
       existente?.nomePessoa2,
     ].whereType<String>().where((nome) => nome.trim().isNotEmpty).join(' e ');
-    _titulo = TextEditingController(text: existente?.titulo ?? '');
     _pessoas = TextEditingController(text: nomesAntigos);
     _local = TextEditingController(text: existente?.localEvento ?? '');
     _tipo = existente?.tipoEvento ?? TipoEvento.casamento;
@@ -1156,10 +1153,27 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
 
   @override
   void dispose() {
-    _titulo.dispose();
     _pessoas.dispose();
     _local.dispose();
     super.dispose();
+  }
+
+  String _tituloGerado() {
+    final pessoa = _pessoas.text.trim();
+    switch (_tipo) {
+      case TipoEvento.casamento:
+      case TipoEvento.bodas:
+        return '${_tipo.rotulo} $pessoa';
+      case TipoEvento.aniversario:
+      case TipoEvento.formatura:
+      case TipoEvento.festaInfantil:
+        return '${_tipo.rotulo} de $pessoa';
+      case TipoEvento.chaDeBebe:
+      case TipoEvento.corporativo:
+      case TipoEvento.confraternizacao:
+      case TipoEvento.outro:
+        return '${_tipo.rotulo}: $pessoa';
+    }
   }
 
   Future<void> _selecionarData() async {
@@ -1212,7 +1226,7 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
       final evento = _editando
           ? await widget.servico.atualizarCasamento(
               casamento: widget.existente!,
-              titulo: _titulo.text,
+              titulo: _tituloGerado(),
               tipoEvento: _tipo,
               nomePessoa1: _pessoas.text,
               dataEvento: _data!,
@@ -1220,7 +1234,7 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
               localEvento: _local.text,
             )
           : await widget.servico.criarCasamento(
-              titulo: _titulo.text,
+              titulo: _tituloGerado(),
               tipoEvento: _tipo,
               nomePessoa1: _pessoas.text,
               dataEvento: _data!,
@@ -1276,30 +1290,25 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
-                  controller: _titulo,
-                  decoration: const InputDecoration(
-                    labelText: 'Nome do evento',
-                    border: OutlineInputBorder(),
+                  controller: _pessoas,
+                  decoration: InputDecoration(
+                    labelText: _tipo.rotuloPessoa,
+                    border: const OutlineInputBorder(),
                   ),
                   validator: (valor) => (valor?.trim().length ?? 0) >= 2
                       ? null
-                      : 'Informe um nome.',
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _pessoas,
-                  decoration: InputDecoration(
-                    labelText: '${_tipo.rotuloPessoa} (opcional)',
-                    border: const OutlineInputBorder(),
-                  ),
+                      : 'Informe ${_tipo.rotuloPessoa.toLowerCase()}.',
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _local,
                   decoration: const InputDecoration(
-                    labelText: 'Local (opcional)',
+                    labelText: 'Local',
                     border: OutlineInputBorder(),
                   ),
+                  validator: (valor) => (valor?.trim().length ?? 0) >= 2
+                      ? null
+                      : 'Informe o local do evento.',
                 ),
                 const SizedBox(height: 8),
                 SizedBox(

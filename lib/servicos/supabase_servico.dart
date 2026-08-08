@@ -489,42 +489,6 @@ class SupabaseServico {
     );
   }
 
-  /// Envia os convites por e-mail no servidor, sem abrir o aplicativo de
-  /// e-mail no celular. O retorno contém os links criados para que a fila de
-  /// WhatsApp possa reutilizar os mesmos convites.
-  Future<Map<String, dynamic>> enviarConvitesEmailEmLote({
-    List<String>? convidadoIds,
-  }) async {
-    _exigirEdicao();
-
-    final casamento = CasamentoAtualServico.instance.casamento;
-    if (casamento == null || !casamento.ehAdmin) {
-      throw StateError('Somente administradoras podem enviar convites.');
-    }
-
-    final body = <String, dynamic>{'casamento_id': casamento.id};
-    if (convidadoIds != null && convidadoIds.isNotEmpty) {
-      body['convidado_ids'] = convidadoIds;
-    }
-
-    final resposta = await _supabase.functions.invoke(
-      'enviar-convites-email',
-      body: body,
-    );
-    final dados = resposta.data is Map
-        ? Map<String, dynamic>.from(resposta.data as Map)
-        : <String, dynamic>{};
-
-    if (resposta.status < 200 || resposta.status >= 300) {
-      throw StateError(
-        dados['mensagem']?.toString() ??
-            'Não foi possível enviar os convites por e-mail.',
-      );
-    }
-
-    return dados;
-  }
-
   Future<List<Map<String, dynamic>>> listarConvitesOnline() async {
     final dados = await _supabase
         .from('convites_online')

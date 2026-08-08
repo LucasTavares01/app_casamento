@@ -44,10 +44,12 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
         .listen(
           _processarEventoAuth,
           onError: (Object erro, StackTrace stackTrace) {
+            debugPrint('ERRO NO RETORNO DE AUTENTICAÇÃO: $erro');
+            debugPrint(stackTrace.toString());
             if (!mounted) return;
             setState(() {
               _carregando = false;
-              _erro = 'Não foi possível concluir a autenticação agora.';
+              _erro = _mensagemErroDoRetornoAuth(erro);
             });
           },
         );
@@ -56,6 +58,24 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
       unawaited(_concluirLoginGooglePendente());
       unawaited(_concluirSessaoExistente());
     });
+  }
+
+  String _mensagemErroDoRetornoAuth(Object erro) {
+    final texto = erro.toString().toLowerCase();
+
+    if (texto.contains('expired') ||
+        texto.contains('invalid') ||
+        texto.contains('token') ||
+        texto.contains('otp')) {
+      return 'Este link de acesso expirou ou já foi utilizado. Peça um novo convite.';
+    }
+
+    if (texto.contains('user not found') ||
+        texto.contains('user does not exist')) {
+      return 'A conta deste convite não está mais disponível. Peça ao responsável para enviar um novo convite.';
+    }
+
+    return 'Não foi possível concluir a autenticação agora. Verifique sua conexão e tente abrir o convite novamente.';
   }
 
   @override
@@ -133,10 +153,27 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
         return;
       }
 
+      // Um funcionário convidado pode ignorar o e-mail/WhatsApp e entrar
+      // diretamente com o Google. Descobrimos o convite antes da
+      // sincronização normal, que descartaria uma conta Auth ainda sem perfil,
+      // e obrigamos a passagem pela tela de primeiro acesso.
+      final possuiConviteFuncionario = await sessao
+          .prepararConviteFuncionarioPendenteDoUsuarioAutenticado();
+      if (possuiConviteFuncionario) {
+        _abrirPrimeiroAcessoFuncionario();
+        return;
+      }
+
       await _sincronizarContaComTentativas(sessao);
       final encerrouFluxoGooglePorContaExistente =
           await _concluirPerfilCerimonialistaGooglePendente();
       if (encerrouFluxoGooglePorContaExistente) return;
+      // A sincronização pode ter descartado uma sessão do Auth que não possui
+      // mais perfil público. Nesse caso, permaneça na tela de login em vez de
+      // abrir a área de eventos com dados antigos ou incompletos.
+      if (!sessao.possuiSessaoLocal || !sessao.possuiUsuarioAtivoNoApp) {
+        return;
+      }
       if (mounted) _abrirAposAutenticacao();
     } catch (erro, stackTrace) {
       debugPrint('ERRO AO CARREGAR CONTA: $erro');

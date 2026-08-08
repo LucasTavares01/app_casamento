@@ -66,11 +66,11 @@ extension TipoEventoExt on TipoEvento {
   String get rotuloPessoa {
     switch (this) {
       case TipoEvento.casamento:
-        return 'Nomes do casal';
+        return 'Nomes dos noivos';
       case TipoEvento.aniversario:
-        return 'Aniversariante';
+        return 'Nome do aniversariante';
       case TipoEvento.formatura:
-        return 'Formando(a)';
+        return 'Nome do formando(a)';
       case TipoEvento.festaInfantil:
         return 'Nome da criança';
       case TipoEvento.chaDeBebe:

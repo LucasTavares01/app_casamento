@@ -569,7 +569,8 @@ class CasamentoAtualServico {
 
     final organizacaoId = (organizacoes.first as Map)['organizacao_id']
         .toString();
-    final tituloLimpo = _textoObrigatorio(titulo);
+    final tituloLimpo = _textoObrigatorio(titulo, 'um nome para o evento');
+    final localLimpo = _textoObrigatorio(localEvento, 'o local do evento');
     if (dataEvento == null || _textoOpcional(horarioEvento) == null) {
       throw ArgumentError('Informe a data e o horário do evento.');
     }
@@ -586,7 +587,7 @@ class CasamentoAtualServico {
           'evento_completo': true,
           'data_evento': dataEvento.toIso8601String().split('T').first,
           'hora_evento': _textoOpcional(horarioEvento),
-          'local_evento': _textoOpcional(localEvento),
+          'local_evento': localLimpo,
           'status': 'rascunho',
         })
         .select(
@@ -628,8 +629,9 @@ class CasamentoAtualServico {
       throw StateError('Este evento não está disponível para edição.');
     }
 
-    final tituloLimpo = _textoObrigatorio(titulo);
-    final horarioLimpo = _textoObrigatorio(horarioEvento);
+    final tituloLimpo = _textoObrigatorio(titulo, 'um nome para o evento');
+    final horarioLimpo = _textoObrigatorio(horarioEvento, 'o horário do evento');
+    final localLimpo = _textoObrigatorio(localEvento, 'o local do evento');
     final resposta = await _supabase
         .from('casamentos')
         .update({
@@ -641,7 +643,7 @@ class CasamentoAtualServico {
           'detalhes_evento': detalhesEvento ?? const <String, dynamic>{},
           'data_evento': dataEvento.toIso8601String().split('T').first,
           'hora_evento': horarioLimpo,
-          'local_evento': _textoOpcional(localEvento),
+          'local_evento': localLimpo,
           'evento_completo': true,
         })
         .eq('id', casamento.id)
@@ -910,10 +912,10 @@ class CasamentoAtualServico {
     return texto == null || texto.isEmpty ? null : texto;
   }
 
-  String _textoObrigatorio(String valor) {
-    final texto = valor.replaceAll('\u0000', '').trim();
+  String _textoObrigatorio(Object? valor, String campo) {
+    final texto = valor?.toString().replaceAll('\u0000', '').trim() ?? '';
     if (texto.isEmpty) {
-      throw ArgumentError('Informe um nome para o casamento.');
+      throw ArgumentError('Informe $campo.');
     }
     return texto;
   }

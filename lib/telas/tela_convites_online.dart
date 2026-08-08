@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -28,15 +29,23 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
   late final Stream<List<Map<String, dynamic>>> _convitesStream;
 
   String _busca = '';
+  String _filtroStatus = 'todos';
   bool _processandoEnvio = false;
   List<_ItemFilaConvite> _fila = const [];
   int _indiceFila = -1;
   bool _aguardandoContinuar = false;
+  final Set<String> _adiadosNaFila = {};
+  final Set<String> _pendentesNaFila = {};
   final Map<String, Map<String, String>> _convitesPreparados = {};
-  final Set<String> _emailsEnviadosLocalmente = {};
   final Set<String> _whatsAppsEnviadosLocalmente = {};
 
   bool get _filaAtiva => _indiceFila >= 0 && _indiceFila < _fila.length;
+
+  /// Funcionários acompanham os convites, mas não podem disparar mensagens.
+  /// Eventos encerrados também permanecem somente para leitura.
+  bool get _podeEnviarConvites =>
+      CasamentoAtualServico.instance.ehAdmin &&
+      !CasamentoAtualServico.instance.somenteLeitura;
 
   @override
   void initState() {
@@ -47,11 +56,6 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
   void _atualizar() {
     if (!mounted) return;
     setState(() {});
-  }
-
-  bool _emailValido(String? valor) {
-    final email = (valor ?? '').trim();
-    return RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email);
   }
 
   String? _normalizarTelefone(String? valor) {
@@ -99,112 +103,56 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
     List<Convidado> convidados,
     Map<String, Map<String, dynamic>> convites,
   ) async {
-    if (_processandoEnvio) return;
-
-    final emailsPendentes = convidados
-        .where((convidado) {
-          final convite = convites[convidado.id];
-          return _emailValido(convidado.email) &&
-              _podeEnviar(convite) &&
-              !_canaisEnviados(convite).contains('email') &&
-              !_emailsEnviadosLocalmente.contains(convidado.id);
-        })
-        .map((convidado) => convidado.id)
-        .toList(growable: false);
-
-    if (emailsPendentes.isNotEmpty) {
-      await _enviarEmailsEmLote(emailsPendentes);
-      if (!mounted) return;
-    }
+    if (!_podeEnviarConvites || _processandoEnvio) return;
 
     final fila = await _montarFilaWhatsApp(convidados, convites);
     if (!mounted) return;
 
     if (fila.isEmpty) {
-      _mostrarMensagem(
-        emailsPendentes.isNotEmpty
-            ? 'E-mails processados. Não há WhatsApps pendentes.'
-            : 'Não há WhatsApps pendentes com número informado.',
-      );
+      _mostrarMensagem('Não há WhatsApps pendentes com número informado.');
       return;
     }
 
     setState(() {
       _fila = fila;
       _indiceFila = 0;
-      _aguardandoContinuar = false;
+      _aguardandoContinuar = true;
+      _adiadosNaFila.clear();
+      _pendentesNaFila.clear();
     });
 
-    await _abrirItemDaFila();
+    await _mostrarConviteDaFila(primeiro: true);
   }
 
-  int _contarEmailsPendentes(
-    List<Convidado> convidados,
-    Map<String, Map<String, dynamic>> convites,
-  ) {
-    return convidados.where((convidado) {
-      final convite = convites[convidado.id];
-      return _emailValido(convidado.email) &&
-          _podeEnviar(convite) &&
-          !_canaisEnviados(convite).contains('email') &&
-          !_emailsEnviadosLocalmente.contains(convidado.id);
-    }).length;
-  }
-
-  Future<void> _enviarEmailsEmLote(List<String> convidadoIds) async {
-    if (convidadoIds.isEmpty || _processandoEnvio) return;
-
-    setState(() => _processandoEnvio = true);
-    try {
-      final resultado = await _servico.enviarConvitesEmailEmLote(
-        convidadoIds: convidadoIds,
-      );
-      final links = resultado['links'];
-      if (links is List) {
-        for (final item in links) {
-          if (item is! Map) continue;
-          final convidadoId = item['convidado_id']?.toString().trim();
-          final conviteId = item['convite_id']?.toString().trim();
-          final link = item['link']?.toString().trim();
-          if (convidadoId == null ||
-              convidadoId.isEmpty ||
-              conviteId == null ||
-              conviteId.isEmpty ||
-              link == null ||
-              link.isEmpty) {
-            continue;
-          }
-          _convitesPreparados[convidadoId] = {'id': conviteId, 'link': link};
-        }
-      }
-
-      final enviados = resultado['enviados'];
-      if (enviados is List) {
-        for (final item in enviados) {
-          if (item is Map) {
-            final id = item['convidado_id']?.toString().trim();
-            if (id != null && id.isNotEmpty) {
-              _emailsEnviadosLocalmente.add(id);
-            }
-          }
-        }
-      }
-
-      final falhas = resultado['emails_falhos']?.toString() ?? '0';
-      final enviadosTotal = resultado['emails_enviados']?.toString() ?? '0';
-      _mostrarMensagem(
-        'E-mails enviados pelo servidor: $enviadosTotal. Falhas: $falhas.',
-      );
-    } catch (erro) {
-      _mostrarMensagem('Não foi possível enviar os e-mails: $erro');
-    } finally {
-      if (mounted) setState(() => _processandoEnvio = false);
-    }
-  }
-
-  Future<void> _enviarEmailIndividual(Convidado convidado) async {
-    if (!_emailValido(convidado.email) || _processandoEnvio) return;
-    await _enviarEmailsEmLote([convidado.id]);
+  Future<bool> _confirmarReenvio(
+    Convidado convidado, {
+    required String canal,
+    required Map<String, dynamic>? convite,
+  }) async {
+    final resposta = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Reenviar convite?'),
+          content: Text(
+            '${convidado.nome} já respondeu: ${_status(convite)}. '
+            'Deseja gerar um novo link e reenviar por $canal?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Reenviar'),
+            ),
+          ],
+        );
+      },
+    );
+    return resposta == true;
   }
 
   Future<void> _abrirItemDaFila() async {
@@ -214,13 +162,49 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
     await _prepararEnvio(item.convidado, item.canal, daFila: true);
   }
 
+  Future<void> _mostrarConviteDaFila({required bool primeiro}) async {
+    if (!mounted || !_filaAtiva) return;
+
+    final item = _fila[_indiceFila];
+    setState(() => _aguardandoContinuar = true);
+
+    final enviar = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(primeiro ? 'Primeiro convite' : 'Próximo convite'),
+          content: Text(
+            '${primeiro ? 'O primeiro' : 'O próximo'} convite será preparado '
+            'para ${item.convidado.nome}. Ao tocar em Enviar, o WhatsApp '
+            'abrirá com a mensagem pronta para esse número.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Parar envio'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Enviar'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted) return;
+    if (enviar == true) {
+      setState(() => _aguardandoContinuar = false);
+      await _abrirItemDaFila();
+    } else {
+      await _pararFila();
+    }
+  }
+
   Future<void> _continuarFila() async {
     if (!_filaAtiva || _processandoEnvio) return;
-
-    setState(() {
-      _aguardandoContinuar = false;
-    });
-    await _abrirItemDaFila();
+    await _mostrarConviteDaFila(primeiro: false);
   }
 
   Future<void> _pararFila() async {
@@ -230,6 +214,8 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
       _fila = const [];
       _indiceFila = -1;
       _aguardandoContinuar = false;
+      _adiadosNaFila.clear();
+      _pendentesNaFila.clear();
     });
     _mostrarMensagem('Envio sequencial interrompido.');
   }
@@ -237,62 +223,55 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
   Future<void> _avancarFila({required bool enviado}) async {
     if (!mounted || !_filaAtiva) return;
 
+    final itemAtual = _fila[_indiceFila];
+    final idAtual = itemAtual.convidado.id;
+    final deveTentarNovamente = !enviado && _adiadosNaFila.add(idAtual);
+    if (enviado) {
+      _adiadosNaFila.remove(idAtual);
+      _pendentesNaFila.remove(idAtual);
+    } else if (!deveTentarNovamente) {
+      _pendentesNaFila.add(idAtual);
+    }
+
+    if (deveTentarNovamente) {
+      _fila.add(itemAtual);
+    }
+
     final proximoIndice = _indiceFila + 1;
     if (proximoIndice >= _fila.length) {
+      final pendentes = _pendentesNaFila.length;
       setState(() {
         _fila = const [];
         _indiceFila = -1;
         _aguardandoContinuar = false;
+        _adiadosNaFila.clear();
+        _pendentesNaFila.clear();
       });
       _mostrarMensagem(
-        enviado
+        pendentes == 0
             ? 'Todos os convites da sequência foram processados.'
-            : 'Convite pulado. A sequência foi concluída.',
+            : '$pendentes convite(s) ficaram pendentes para uma nova tentativa.',
       );
       return;
     }
 
-    final proximo = _fila[proximoIndice];
     setState(() {
       _indiceFila = proximoIndice;
       _aguardandoContinuar = true;
     });
-
-    final continuar = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Próximo convite'),
-          content: Text('O próximo é ${proximo.convidado.nome}, por WhatsApp.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Parar fila'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Continuar'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (!mounted) return;
-    if (continuar == true) {
-      setState(() {
-        _aguardandoContinuar = false;
-      });
-      await _abrirItemDaFila();
-    } else {
-      await _pararFila();
-    }
+    await _mostrarConviteDaFila(primeiro: false);
   }
 
-  Future<Map<String, String>> _prepararConvite(Convidado convidado) async {
+  Future<Map<String, String>> _prepararConvite(
+    Convidado convidado, {
+    bool renovar = false,
+  }) async {
+    if (!_podeEnviarConvites) {
+      throw StateError('Funcionários não podem enviar convites online.');
+    }
+
     final convitePreparado = _convitesPreparados[convidado.id];
-    if (convitePreparado != null) {
+    if (!renovar && convitePreparado != null) {
       return convitePreparado;
     }
 
@@ -328,8 +307,14 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
     Convidado convidado,
     String canal, {
     required bool daFila,
+    Map<String, dynamic>? convite,
   }) async {
-    if (_processandoEnvio) return;
+    if (!_podeEnviarConvites || _processandoEnvio) return;
+
+    final reenvio = !daFila && !_podeEnviar(convite)
+        ? await _confirmarReenvio(convidado, canal: 'WhatsApp', convite: convite)
+        : false;
+    if (!daFila && !_podeEnviar(convite) && !reenvio) return;
 
     final telefone = _normalizarTelefone(convidado.whatsapp);
     if (canal != 'whatsapp' || telefone == null) {
@@ -340,8 +325,11 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
     setState(() => _processandoEnvio = true);
 
     try {
-      final convite = await _prepararConvite(convidado);
-      final link = convite['link']!;
+      final convitePreparado = await _prepararConvite(
+        convidado,
+        renovar: !daFila && reenvio,
+      );
+      final link = convitePreparado['link']!;
       final texto = _textoConvite(convidado, link);
       final uri = Uri.parse(
         'https://wa.me/$telefone?text=${Uri.encodeComponent(texto)}',
@@ -359,21 +347,21 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
         barrierDismissible: false,
         builder: (dialogContext) {
           return AlertDialog(
-            title: Text('WhatsApp aberto'),
+            title: const Text('Mensagem no WhatsApp'),
             content: Text(
               daFila
-                  ? 'A mensagem de ${convidado.nome} foi preparada. Toque em Enviar no WhatsApp e depois volte ao ConfirmaAi para continuar.'
+                  ? 'Depois de tocar em Enviar no WhatsApp, volte manualmente ao ConfirmaAi e confirme se a mensagem de ${convidado.nome} foi enviada.'
                   : 'A mensagem foi preparada para ${convidado.nome}. Depois de tocar em Enviar, confirme o registro no ConfirmaAi.',
             ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(dialogContext, false),
-                child: Text(daFila ? 'Pular' : 'Ainda não'),
+                child: Text(daFila ? 'Não enviei' : 'Ainda não'),
               ),
               FilledButton(
                 onPressed: () => Navigator.pop(dialogContext, true),
                 child: Text(
-                  daFila ? 'Enviar e continuar' : 'Marcar como enviado',
+                  daFila ? 'Sim, enviei' : 'Marcar como enviado',
                 ),
               ),
             ],
@@ -384,7 +372,7 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
       if (marcouComoEnviado == true) {
         _whatsAppsEnviadosLocalmente.add(convidado.id);
         await _servico.registrarEnvioConviteOnline(
-          conviteId: convite['id']!,
+          conviteId: convitePreparado['id']!,
           canal: canal,
         );
         if (mounted) {
@@ -451,6 +439,71 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
     }
   }
 
+  String _chaveStatus(Map<String, dynamic>? convite) {
+    switch (convite?['status']?.toString()) {
+      case 'enviado':
+        return 'enviado';
+      case 'aberto':
+        return 'aberto';
+      case 'confirmado':
+        return 'confirmado';
+      case 'recusado':
+        return 'recusado';
+      default:
+        return 'pendente';
+    }
+  }
+
+  Future<void> _selecionarFiltroStatus() async {
+    final selecionado = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) {
+        const opcoes = <String, String>{
+          'todos': 'Todos os status',
+          'pendente': 'Ainda não enviado',
+          'enviado': 'Enviado',
+          'aberto': 'Link acessado',
+          'confirmado': 'Presença confirmada',
+          'recusado': 'Não participará',
+        };
+
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 18, 20, 8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Filtrar por status',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ),
+              ...opcoes.entries.map(
+                (opcao) => ListTile(
+                  leading: Icon(
+                    opcao.key == _filtroStatus
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                  ),
+                  title: Text(opcao.value),
+                  onTap: () => Navigator.of(context).pop(opcao.key),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selecionado != null && mounted) {
+      setState(() => _filtroStatus = selecionado);
+    }
+  }
+
   void _mostrarMensagem(String mensagem) {
     if (!mounted) return;
     ScaffoldMessenger.of(
@@ -460,8 +513,6 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
 
   @override
   Widget build(BuildContext context) {
-    final casamento = CasamentoAtualServico.instance.casamento;
-
     return Scaffold(
       appBar: widget.mostrarAppBar
           ? AppBar(
@@ -487,12 +538,8 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
             return const Center(child: CircularProgressIndicator());
           }
 
-          final convidados =
+          final convidadosTodos =
               convidadosSnapshot.data!
-                  .where(
-                    (convidado) =>
-                        convidado.nome.toLowerCase().contains(_busca),
-                  )
                   .toList()
                 ..sort(
                   (a, b) =>
@@ -507,90 +554,107 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
                   convite['convidado_id'].toString(): convite,
               };
 
-              final totalEmail = convidados
-                  .where((c) => _emailValido(c.email))
-                  .length;
-              final totalWhatsApp = convidados
-                  .where((c) => _normalizarTelefone(c.whatsapp) != null)
-                  .length;
-              final filaPendente = _montarFilaWhatsApp(convidados, convites);
-              final emailsPendentes = _contarEmailsPendentes(
-                convidados,
-                convites,
-              );
+              final convidados = convidadosTodos
+                  .where(
+                    (convidado) =>
+                        convidado.nome.toLowerCase().contains(_busca) &&
+                        (_filtroStatus == 'todos' ||
+                            _chaveStatus(convites[convidado.id]) ==
+                                _filtroStatus),
+                  )
+                  .toList(growable: false);
+
+              final filaPendente = _podeEnviarConvites
+                  ? _montarFilaWhatsApp(convidadosTodos, convites)
+                  : Future.value(const <_ItemFilaConvite>[]);
 
               return Column(
                 children: [
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
-                    child: TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Buscar convidado',
-                        prefixIcon: Icon(Icons.search),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: (valor) {
-                        setState(() => _busca = valor.trim().toLowerCase());
-                      },
-                    ),
-                  ),
-                  Card(
-                    margin: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 6,
-                    ),
-                    child: ListTile(
-                      leading: const Icon(Icons.mark_email_unread_outlined),
-                      title: Text(
-                        '$totalEmail e-mails • $totalWhatsApp WhatsApps',
-                      ),
-                      subtitle: Text(
-                        casamento == null
-                            ? 'Cada mensagem será preparada com o link individual do convite.'
-                            : 'Evento: ${casamento.titulo}.',
-                      ),
-                    ),
-                  ),
-                  FutureBuilder<List<_ItemFilaConvite>>(
-                    future: filaPendente,
-                    builder: (context, filaSnapshot) {
-                      final quantidade = filaSnapshot.data?.length ?? 0;
-                      final textoBotao = _filaAtiva
-                          ? _aguardandoContinuar
-                                ? 'Continuar envio (${_indiceFila + 1}/${_fila.length})'
-                                : 'Parar envio (${_indiceFila + 1}/${_fila.length})'
-                          : emailsPendentes > 0
-                          ? 'Enviar e-mails e WhatsApps ($emailsPendentes + $quantidade)'
-                          : 'Iniciar WhatsApps ($quantidade)';
-
-                      return Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
-                        child: SizedBox(
-                          width: double.infinity,
-                          child: FilledButton.icon(
-                            onPressed: _processandoEnvio
-                                ? null
-                                : _filaAtiva
-                                ? (_aguardandoContinuar
-                                      ? _continuarFila
-                                      : _pararFila)
-                                : () => _iniciarFila(convidados, convites),
-                            icon: Icon(
-                              _filaAtiva && !_aguardandoContinuar
-                                  ? Icons.stop_circle_outlined
-                                  : Icons.send,
+                    padding: const EdgeInsets.fromLTRB(16, 8, 12, 4),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              labelText: 'Buscar convidado',
+                              prefixIcon: Icon(Icons.search),
+                              border: OutlineInputBorder(),
+                              contentPadding: EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 10,
+                              ),
                             ),
-                            label: Text(textoBotao),
+                            onChanged: (valor) {
+                              setState(
+                                () => _busca = valor.trim().toLowerCase(),
+                              );
+                            },
                           ),
                         ),
-                      );
-                    },
+                        const SizedBox(width: 2),
+                        IconButton(
+                          tooltip: 'Filtrar por status',
+                          onPressed: _selecionarFiltroStatus,
+                          icon: Icon(
+                            Icons.filter_list,
+                            color: _filtroStatus == 'todos'
+                                ? null
+                                : Theme.of(context).colorScheme.primary,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  if (_filaAtiva)
+                  if (!_podeEnviarConvites)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
+                      child: Text(
+                        'Somente leitura: acompanhe o status dos convites.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                        textAlign: TextAlign.center,
+                      ),
+                    )
+                  else
+                    FutureBuilder<List<_ItemFilaConvite>>(
+                      future: filaPendente,
+                      builder: (context, filaSnapshot) {
+                        final quantidade = filaSnapshot.data?.length ?? 0;
+                        final textoBotao = _filaAtiva
+                            ? _aguardandoContinuar
+                                  ? 'Preparar WhatsApp (${_indiceFila + 1}/${_fila.length})'
+                                  : 'Parar envio (${_indiceFila + 1}/${_fila.length})'
+                            : 'Iniciar WhatsApps ($quantidade)';
+
+                        return Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
+                          child: SizedBox(
+                            width: double.infinity,
+                            child: FilledButton.icon(
+                              onPressed: _processandoEnvio
+                                  ? null
+                                  : _filaAtiva
+                                  ? (_aguardandoContinuar
+                                        ? _continuarFila
+                                        : _pararFila)
+                                  : () => _iniciarFila(convidados, convites),
+                              icon: Icon(
+                                _filaAtiva && !_aguardandoContinuar
+                                    ? Icons.stop_circle_outlined
+                                    : Icons.send,
+                              ),
+                              label: Text(textoBotao),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  if (_filaAtiva && _podeEnviarConvites)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
                       child: Text(
-                        'Os e-mails são enviados pelo servidor. Depois, cada WhatsApp é aberto individualmente para você tocar em Enviar.',
+                        'Cada WhatsApp é aberto individualmente para você tocar em Enviar.',
                         style: Theme.of(context).textTheme.bodySmall,
                         textAlign: TextAlign.center,
                       ),
@@ -614,7 +678,8 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
                               final telefoneValido =
                                   _normalizarTelefone(convidado.whatsapp) !=
                                   null;
-                              final emailValido = _emailValido(convidado.email);
+                              final emailInformado =
+                                  convidado.email?.trim().isNotEmpty == true;
                               final corStatus = _corStatus(convite);
 
                               return Card(
@@ -627,7 +692,7 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
                                   ),
                                   leading: CircleAvatar(
                                     child: Icon(
-                                      emailValido || telefoneValido
+                                      telefoneValido
                                           ? Icons.person
                                           : Icons.person_outline,
                                     ),
@@ -652,7 +717,7 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
                                             : 'WhatsApp não informado',
                                       ),
                                       Text(
-                                        emailValido
+                                        emailInformado
                                             ? 'E-mail: ${convidado.email}'
                                             : 'E-mail não informado',
                                       ),
@@ -661,28 +726,27 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
                                   trailing: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      IconButton(
-                                        tooltip: 'Preparar e-mail',
-                                        onPressed:
-                                            emailValido && !_processandoEnvio
-                                            ? () => _enviarEmailIndividual(
-                                                convidado,
-                                              )
-                                            : null,
-                                        icon: const Icon(Icons.email_outlined),
-                                      ),
-                                      IconButton(
-                                        tooltip: 'Abrir WhatsApp',
-                                        onPressed:
-                                            telefoneValido && !_processandoEnvio
-                                            ? () => _prepararEnvio(
-                                                convidado,
-                                                'whatsapp',
-                                                daFila: false,
-                                              )
-                                            : null,
-                                        icon: const Icon(Icons.chat_outlined),
-                                      ),
+                                      if (_podeEnviarConvites) ...[
+                                        IconButton(
+                                          tooltip: _podeEnviar(convite)
+                                              ? 'Abrir WhatsApp'
+                                              : 'Reenviar WhatsApp',
+                                            onPressed:
+                                                telefoneValido &&
+                                                    !_processandoEnvio
+                                              ? () => _prepararEnvio(
+                                                  convidado,
+                                                  'whatsapp',
+                                                  daFila: false,
+                                                  convite: convite,
+                                                )
+                                              : null,
+                                          icon: const FaIcon(
+                                            FontAwesomeIcons.whatsapp,
+                                            size: 22,
+                                          ),
+                                        ),
+                                      ],
                                       Icon(
                                         _iconeStatus(convite),
                                         color: corStatus,

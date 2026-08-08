@@ -11,6 +11,20 @@ import '../modelos/modelos_importacao.dart';
 import 'casamento_atual_servico.dart';
 import 'sessao_servico.dart';
 
+class ArquivoListaSelecionado {
+  final String nome;
+  final String mimeType;
+  final Uint8List bytes;
+
+  const ArquivoListaSelecionado({
+    required this.nome,
+    required this.mimeType,
+    required this.bytes,
+  });
+
+  int get tamanhoBytes => bytes.length;
+}
+
 class ImportacaoListaServico {
   ImportacaoListaServico._();
 
@@ -32,7 +46,7 @@ class ImportacaoListaServico {
   final SupabaseClient _supabase = Supabase.instance.client;
   final ImagePicker _imagePicker = ImagePicker();
 
-  Future<ResultadoPreviaImportacao?> selecionarEAnalisarArquivo() async {
+  Future<ArquivoListaSelecionado?> selecionarArquivo() async {
     final selecao = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: _extensoesPermitidas,
@@ -66,14 +80,14 @@ class ImportacaoListaServico {
       );
     }
 
-    return _analisarBytes(
-      arquivoNome: arquivo.name,
+    return ArquivoListaSelecionado(
+      nome: arquivo.name,
       mimeType: _obterMimeType(extensao),
       bytes: bytes,
     );
   }
 
-  Future<ResultadoPreviaImportacao?> tirarFotoEAnalisar() async {
+  Future<ArquivoListaSelecionado?> tirarFoto() async {
     late final XFile? foto;
     try {
       foto = await _imagePicker.pickImage(
@@ -100,10 +114,20 @@ class ImportacaoListaServico {
       throw const ImportacaoListaException('A foto selecionada está vazia.');
     }
 
-    return _analisarBytes(
-      arquivoNome: foto.name.isEmpty ? 'foto_lista.jpg' : foto.name,
+    return ArquivoListaSelecionado(
+      nome: foto.name.isEmpty ? 'foto_lista.jpg' : foto.name,
       mimeType: 'image/jpeg',
       bytes: bytes,
+    );
+  }
+
+  Future<ResultadoPreviaImportacao> analisarArquivo(
+    ArquivoListaSelecionado arquivo,
+  ) {
+    return _analisarBytes(
+      arquivoNome: arquivo.nome,
+      mimeType: arquivo.mimeType,
+      bytes: arquivo.bytes,
     );
   }
 

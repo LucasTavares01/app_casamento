@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../servicos/casamento_atual_servico.dart';
 import '../servicos/sessao_servico.dart';
 
 class TelaCriarConta extends StatefulWidget {
@@ -10,7 +13,8 @@ class TelaCriarConta extends StatefulWidget {
   State<TelaCriarConta> createState() => _TelaCriarContaState();
 }
 
-class _TelaCriarContaState extends State<TelaCriarConta> {
+class _TelaCriarContaState extends State<TelaCriarConta>
+    with WidgetsBindingObserver {
   final _formKey = GlobalKey<FormState>();
   final _nomeController = TextEditingController();
   final _emailController = TextEditingController();
@@ -19,10 +23,46 @@ class _TelaCriarContaState extends State<TelaCriarConta> {
 
   bool _criando = false;
   bool _ocultarSenha = true;
+  bool _aguardandoRetornoGoogle = false;
+  bool _loginGoogleEmAndamento = false;
   String? _erro;
+
+  StreamSubscription<AuthState>? _mudancasAutenticacao;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _mudancasAutenticacao = Supabase.instance.client.auth.onAuthStateChange
+        .listen((estado) {
+          if (_loginGoogleEmAndamento &&
+              (estado.event == AuthChangeEvent.signedIn ||
+                  estado.event == AuthChangeEvent.userUpdated)) {
+            unawaited(_aguardarCriacaoGoogle());
+          }
+        });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed ||
+        !_criando ||
+        !_loginGoogleEmAndamento) {
+      return;
+    }
+
+    if (SessaoServico.instance.possuiSessaoLocal) {
+      unawaited(_aguardarCriacaoGoogle());
+    } else {
+      _loginGoogleEmAndamento = false;
+      setState(() => _criando = false);
+    }
+  }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _mudancasAutenticacao?.cancel();
     _nomeController.dispose();
     _emailController.dispose();
     _senhaController.dispose();
@@ -129,6 +169,7 @@ class _TelaCriarContaState extends State<TelaCriarConta> {
   Future<void> _entrarComGoogle() async {
     setState(() {
       _criando = true;
+      _loginGoogleEmAndamento = true;
       _erro = null;
     });
 
@@ -140,17 +181,73 @@ class _TelaCriarContaState extends State<TelaCriarConta> {
       if (mounted) {
         setState(() {
           _erro = 'Não foi possível abrir o login com Google agora.';
+          _criando = false;
+          _loginGoogleEmAndamento = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _aguardarCriacaoGoogle() async {
+    if (!mounted ||
+        !_loginGoogleEmAndamento ||
+        _aguardandoRetornoGoogle) {
+      return;
+    }
+    _aguardandoRetornoGoogle = true;
+
+    try {
+      for (var tentativa = 0; tentativa < 20; tentativa++) {
+        if (!mounted) return;
+
+        if (!SessaoServico.instance.possuiSessaoLocal) {
+          if (tentativa == 0) {
+            await Future<void>.delayed(const Duration(milliseconds: 300));
+            continue;
+          }
+          _loginGoogleEmAndamento = false;
+          if (mounted) setState(() => _criando = false);
+          return;
+        }
+
+        try {
+          final papeis = await CasamentoAtualServico.instance
+              .obterPapeisContaAtual();
+          final fluxoAindaPendente = await SessaoServico.instance
+              .possuiPerfilCerimonialistaGooglePendente();
+
+          if (papeis.cerimonialista || !fluxoAindaPendente) {
+            _loginGoogleEmAndamento = false;
+            if (mounted) setState(() => _criando = false);
+            return;
+          }
+        } catch (_) {
+          // O fluxo principal da porta de entrada ainda pode estar concluindo
+          // o RPC. A próxima tentativa verifica novamente sem liberar cliques.
+        }
+
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
+
+      if (mounted) {
+        _loginGoogleEmAndamento = false;
+        setState(() {
+          _criando = false;
+          _erro =
+              'A criação da conta ainda não foi confirmada. Tente novamente.';
         });
       }
     } finally {
-      if (mounted) setState(() => _criando = false);
+      _aguardandoRetornoGoogle = false;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Criar conta')),
+    return PopScope(
+      canPop: !_criando,
+      child: Scaffold(
+        appBar: AppBar(title: const Text('Criar conta')),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -175,6 +272,10 @@ class _TelaCriarContaState extends State<TelaCriarConta> {
                       style: TextStyle(color: Colors.grey.shade700),
                     ),
                     const SizedBox(height: 24),
+                    if (_criando) ...[
+                      const LinearProgressIndicator(),
+                      const SizedBox(height: 16),
+                    ],
                     _botaoGoogle(),
                     const SizedBox(height: 20),
                     const Row(
@@ -271,6 +372,7 @@ class _TelaCriarContaState extends State<TelaCriarConta> {
             ),
           ),
         ),
+      ),
       ),
     );
   }

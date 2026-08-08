@@ -18,11 +18,17 @@ dependencies:
   # Comunicação com o banco de dados online.
   supabase_flutter: ^2.12.4
 
+  # Recebe links próprios de convite diretamente no aplicativo.
+  app_links: ^7.0.0
+
   # Gerenciamento de estado já utilizado pelo projeto.
   provider: ^6.1.5+1
 
   # Fontes utilizadas pela interface.
   google_fonts: ^8.1.0
+
+  # Ícones oficiais de marcas, incluindo o WhatsApp.
+  font_awesome_flutter: ^10.8.0
 
   # Banco de dados SQLite local e reativo.
   drift: ^2.34.1
@@ -48,7 +54,6 @@ dependencies:
 
   # Permite fotografar uma lista diretamente pela câmera do celular.
   image_picker: ^1.2.0
-
 
 dev_dependencies:
   flutter_test:

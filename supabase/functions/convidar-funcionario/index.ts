@@ -8,9 +8,14 @@ const corsHeaders = {
 };
 
 const REDIRECT_LOGIN = "br.com.appcasamento://login-callback";
+const LINK_WEB_CONVITE_FUNCIONARIO =
+  "https://confirmaai-convites.netlify.app/convite-funcionario/?token=";
 const USUARIOS_POR_PAGINA = 1000;
 
-type AdminClient = ReturnType<typeof createClient>;
+// O cliente administrativo é criado sem um tipo de banco gerado nesta função.
+// Parametrizar o schema evita que o tipo padrão `unknown` do createClient
+// transforme os retornos de consultas/RPC em `never` durante o deploy.
+type AdminClient = ReturnType<typeof createClient<any, "public">>;
 
 type ResultadoNotificacao = {
   enviada: boolean;
@@ -117,6 +122,10 @@ Deno.serve(async (request) => {
     let telefoneDestino: string | null = telefoneInformado;
     let conviteEnviado = false;
     let contaJaExistia = false;
+    const tokenConvite = gerarTokenConvite();
+    const hashTokenConvite = await sha256Hex(tokenConvite);
+    const linkConviteApp =
+      `${LINK_WEB_CONVITE_FUNCIONARIO}${encodeURIComponent(tokenConvite)}`;
 
     if (funcionarioId) {
       const { data: funcionario, error: erroFuncionario } = await admin
@@ -175,6 +184,8 @@ Deno.serve(async (request) => {
               abrir_como_funcionario: true,
               criar_organizacao: false,
               precisa_definir_senha: true,
+              convite_app_token: tokenConvite,
+              convite_app_link: linkConviteApp,
             },
             redirectTo: REDIRECT_LOGIN,
           });
@@ -297,6 +308,8 @@ Deno.serve(async (request) => {
       text(casamento.data_evento),
       text(casamento.hora_evento),
       text(casamento.local_evento),
+      tokenConvite,
+      linkConviteApp,
     );
 
     if (!metadadosPreparados) {
@@ -309,17 +322,35 @@ Deno.serve(async (request) => {
       );
     }
 
+    const { error: erroToken } = await admin
+      .from("convites_funcionario_app")
+      .upsert(
+        {
+          casamento_id: casamentoId,
+          organizacao_id: casamento.organizacao_id,
+          usuario_id: usuarioId,
+          email: emailDestino,
+          token_hash: hashTokenConvite,
+          expira_em: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+          usado_em: null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "casamento_id,usuario_id" },
+      );
+
+    if (erroToken) {
+      console.error("Erro ao salvar token próprio do convite", erroToken);
+      return json(
+        { mensagem: "Não foi possível preparar o link seguro do convite." },
+        500,
+      );
+    }
+
     const notificacao: ResultadoNotificacao = conviteEnviado
       ? { enviada: true, mensagem: null }
       : await enviarLinkDeAcesso(admin, emailDestino);
 
-    const linkWhatsApp = telefoneDestino
-      ? await gerarLinkDeAcessoWhatsApp(
-          admin,
-          emailDestino,
-          conviteEnviado,
-        )
-      : null;
+    const linkWhatsApp = telefoneDestino ? linkConviteApp : null;
 
     return json({
       usuario_id: usuarioId,
@@ -357,7 +388,58 @@ async function buscarPerfilPorEmail(
     };
   }
 
-  if ((data?.length ?? 0) > 1) {
+  const perfis = Array.isArray(data) ? data : [];
+  const perfisValidos: string[] = [];
+
+  for (const perfil of perfis) {
+    const usuarioId = text(perfil?.id);
+    if (!usuarioId) continue;
+
+    const { data: usuarioAuth, error: erroAuth } =
+      await admin.auth.admin.getUserById(usuarioId);
+
+    if (!erroAuth && usuarioAuth.user) {
+      const emailAuth = normalizeEmail(usuarioAuth.user.email);
+      if (emailAuth === email) {
+        perfisValidos.push(usuarioId);
+      } else {
+        console.error(
+          "Perfil e usuário Auth não correspondem ao mesmo e-mail",
+          { usuarioId, emailPerfil: email, emailAuth },
+        );
+      }
+      continue;
+    }
+
+    if (isAuthUserMissing(erroAuth)) {
+      const { error: erroLimpeza } = await admin
+        .from("usuarios_app")
+        .delete()
+        .eq("id", usuarioId);
+
+      if (erroLimpeza) {
+        console.error("Não foi possível remover perfil órfão", erroLimpeza);
+        return {
+          usuarioId: null,
+          erro:
+            "Foi encontrado um cadastro antigo incompleto. Não foi possível corrigi-lo automaticamente; tente excluir esse cadastro e enviar o convite novamente.",
+          status: 500,
+        };
+      }
+
+      console.warn("Perfil órfão removido antes de reenviar convite", usuarioId);
+      continue;
+    }
+
+    console.error("Erro ao verificar usuário do perfil", erroAuth);
+    return {
+      usuarioId: null,
+      erro: "Não foi possível verificar a conta existente. Tente novamente.",
+      status: 500,
+    };
+  }
+
+  if (perfisValidos.length > 1) {
     return {
       usuarioId: null,
       erro:
@@ -367,7 +449,7 @@ async function buscarPerfilPorEmail(
   }
 
   return {
-    usuarioId: data?.[0]?.id ?? null,
+    usuarioId: perfisValidos[0] ?? null,
     erro: null,
     status: 200,
   };
@@ -429,6 +511,8 @@ async function atualizarMetadadosDoConvite(
   eventoData: string,
   eventoHorario: string,
   eventoLocal: string,
+  conviteAppToken: string,
+  conviteAppLink: string,
 ): Promise<boolean> {
   const { data: usuarioAtual, error: erroLeitura } =
     await admin.auth.admin.getUserById(usuarioId);
@@ -456,6 +540,8 @@ async function atualizarMetadadosDoConvite(
         evento_local: eventoLocal,
         casamento_id: casamentoId,
         abrir_como_funcionario: true,
+        convite_app_token: conviteAppToken,
+        convite_app_link: conviteAppLink,
       },
     });
 
@@ -491,28 +577,49 @@ async function enviarLinkDeAcesso(
   };
 }
 
-async function gerarLinkDeAcessoWhatsApp(
-  admin: AdminClient,
-  email: string,
-  ehNovoConvite: boolean,
-): Promise<string | null> {
-  const { data, error } = await admin.auth.admin.generateLink({
-    type: ehNovoConvite ? "invite" : "magiclink",
-    email,
-    options: { redirectTo: REDIRECT_LOGIN },
-  });
+function gerarTokenConvite(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return base64Url(bytes);
+}
 
-  if (error || !data?.properties?.action_link) {
-    console.error("Não foi possível gerar o link do WhatsApp", error);
-    return null;
-  }
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
 
-  return data.properties.action_link;
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 function isExistingUserError(error: unknown): boolean {
   const code = authErrorCode(error);
   return code === "user_already_exists" || code === "email_exists";
+}
+
+function isAuthUserMissing(error: unknown): boolean {
+  if (!error) return false;
+
+  const code = authErrorCode(error).toLowerCase();
+  const status = authErrorStatus(error);
+  const message = authErrorMessage(error).toLowerCase();
+
+  return (
+    status === 404 ||
+    code === "user_not_found" ||
+    code === "not_found" ||
+    message.includes("user not found") ||
+    message.includes("user does not exist")
+  );
 }
 
 function friendlyAuthError(error: unknown, fallback: string): string {
