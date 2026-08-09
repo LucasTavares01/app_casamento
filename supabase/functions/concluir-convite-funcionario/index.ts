@@ -29,6 +29,7 @@ Deno.serve(async (request) => {
     const token = text(body?.token);
     const acao = text(body?.acao);
     const senha = text(body?.senha);
+    const emailInformado = normalizeEmail(body?.email);
 
     if (!acao || !["dados", "senha", "google", "pendente"].includes(acao)) {
       return json({ mensagem: "O convite está incompleto." }, 400);
@@ -153,6 +154,19 @@ Deno.serve(async (request) => {
         return json({ mensagem: "A senha precisa ter pelo menos 6 caracteres." }, 400);
       }
 
+      const emailDestino = normalizeEmail(convite.email) || emailInformado;
+      if (!isValidEmail(emailDestino)) {
+        return json(
+          { mensagem: "Informe um e-mail válido para concluir o acesso." },
+          400,
+        );
+      }
+
+      const usuarioComMesmoEmail = await buscarUsuarioAuthPorEmail(admin, emailDestino);
+      if (usuarioComMesmoEmail && usuarioComMesmoEmail.id !== convite.usuario_id) {
+        return json({ mensagem: "Este e-mail já está vinculado a outra conta." }, 409);
+      }
+
       const metadados = {
         ...(usuario.user.user_metadata ?? {}),
         precisa_definir_senha: false,
@@ -165,6 +179,7 @@ Deno.serve(async (request) => {
 
       const { error: erroAtualizacao } =
         await admin.auth.admin.updateUserById(convite.usuario_id, {
+          email: emailDestino,
           password: senha,
           email_confirm: true,
           user_metadata: metadados,
@@ -175,11 +190,25 @@ Deno.serve(async (request) => {
         return json({ mensagem: "Não foi possível criar o acesso agora." }, 500);
       }
 
+      await admin
+        .from("convites_funcionario_app")
+        .update({ email: emailDestino })
+        .eq("id", convite.id);
+      await admin
+        .from("funcionarios_organizacao")
+        .update({ email: emailDestino, updated_at: new Date().toISOString() })
+        .eq("usuario_id", convite.usuario_id);
+      await admin
+        .from("usuarios_app")
+        .update({ email: emailDestino })
+        .eq("id", convite.usuario_id);
+
       await marcarComoUsado(admin, convite.id);
-      return json({ ok: true, email: convite.email });
+      return json({ ok: true, email: emailDestino });
     }
 
-    if (!isGmail(convite.email)) {
+    const emailConvite = normalizeEmail(convite.email);
+    if (emailConvite && !isGmail(emailConvite)) {
       return json(
         { mensagem: "Este convite deve ser concluído criando uma senha." },
         400,
@@ -195,7 +224,8 @@ Deno.serve(async (request) => {
     const { data: identidade, error: erroIdentidade } =
       await admin.auth.getUser(bearer);
     const emailAtual = normalizeEmail(identidade.user?.email);
-    if (erroIdentidade || !identidade.user || emailAtual !== normalizeEmail(convite.email)) {
+    if (erroIdentidade || !identidade.user ||
+        (emailConvite && emailAtual !== emailConvite)) {
       return json(
         { mensagem: "Use a mesma conta Google que recebeu o convite." },
         403,
@@ -239,6 +269,19 @@ Deno.serve(async (request) => {
     if (erroGoogle) {
       return json({ mensagem: "Não foi possível concluir o cadastro Google." }, 500);
     }
+
+    await admin
+      .from("convites_funcionario_app")
+      .update({ email: emailAtual })
+      .eq("id", convite.id);
+    await admin
+      .from("funcionarios_organizacao")
+      .update({ email: emailAtual, updated_at: new Date().toISOString() })
+      .eq("usuario_id", identidade.user.id);
+    await admin
+      .from("usuarios_app")
+      .update({ email: emailAtual })
+      .eq("id", identidade.user.id);
 
     await marcarComoUsado(admin, convite.id);
     return json({ ok: true, email: convite.email });
@@ -353,6 +396,30 @@ function text(value: unknown): string {
 
 function normalizeEmail(value: unknown): string {
   return text(value).toLowerCase();
+}
+
+async function buscarUsuarioAuthPorEmail(
+  admin: AdminClient,
+  email: string,
+): Promise<{ id: string } | null> {
+  for (let pagina = 1; pagina <= 100; pagina += 1) {
+    const { data, error } = await admin.auth.admin.listUsers({
+      page: pagina,
+      perPage: 1000,
+    });
+    if (error) throw error;
+
+    const usuario = data.users.find(
+      (item) => normalizeEmail(item.email) === email,
+    );
+    if (usuario) return { id: usuario.id };
+    if (data.users.length < 1000) return null;
+  }
+  return null;
+}
+
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function isGmail(value: unknown): boolean {

@@ -376,7 +376,10 @@ async function buildGeminiFilePart(input: {
 // realmente é XLS/XLSX.
 async function extractWorkbookText(bytes: Uint8Array): Promise<string> {
   try {
-    const XLSX = await import("npm:xlsx@0.18.5");
+    // @ts-ignore O runtime Deno resolve este módulo remoto somente quando necessário.
+    const XLSX = await import(
+      "https://esm.sh/xlsx@0.18.5?target=deno&bundle",
+    );
     const workbook = XLSX.read(bytes, {
       type: "array",
       raw: false,

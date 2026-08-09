@@ -145,7 +145,7 @@ class EquipeServico {
 
   Future<ResultadoConviteFuncionario> convidarFuncionario({
     required String nome,
-    required String email,
+    String? email,
     String? telefone,
   }) async {
     final casamento = CasamentoAtualServico.instance.casamento;
@@ -157,7 +157,7 @@ class EquipeServico {
       body: {
         'casamento_id': casamento.id,
         'nome': nome.trim(),
-        'email': email.trim(),
+        'email': email?.trim(),
         'telefone': telefone?.trim(),
       },
     );
@@ -215,7 +215,7 @@ class EquipeServico {
   Future<void> atualizarDadosFuncionario({
     required MembroEquipe membro,
     required String nome,
-    required String email,
+    String? email,
     String? telefone,
   }) async {
     final casamento = CasamentoAtualServico.instance.casamento;
@@ -227,8 +227,10 @@ class EquipeServico {
     if (nomeNormalizado.length < 2) {
       throw const FormatException('Informe um nome válido.');
     }
-    final emailNormalizado = email.trim().toLowerCase();
-    if (!emailNormalizado.contains('@')) {
+    final emailNormalizado = email?.trim().toLowerCase();
+    if (emailNormalizado != null &&
+        emailNormalizado.isNotEmpty &&
+        !emailNormalizado.contains('@')) {
       throw const FormatException('Informe um e-mail válido.');
     }
 
@@ -237,7 +239,9 @@ class EquipeServico {
         .from('funcionarios_organizacao')
         .update({
           'nome': nomeNormalizado,
-          'email': emailNormalizado,
+          'email': emailNormalizado == null || emailNormalizado.isEmpty
+              ? null
+              : emailNormalizado,
           'telefone': telefoneNormalizado == null || telefoneNormalizado.isEmpty
               ? null
               : telefoneNormalizado,

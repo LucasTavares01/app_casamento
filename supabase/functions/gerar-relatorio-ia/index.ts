@@ -89,7 +89,7 @@ Deno.serve(async (request) => {
     }
 
     const access = await validateAdminAccess(request, casamentoId);
-    if (!access.valid) {
+    if (access.valid === false) {
       return jsonResponse({ mensagem: access.message }, access.status);
     }
 

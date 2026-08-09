@@ -90,7 +90,7 @@ Deno.serve(async (request) => {
 
     const { data: evento, error: eventoError } = await admin
       .from("casamentos")
-      .select("titulo, status")
+      .select("titulo, status, data_limite_confirmacao")
       .eq("id", casamentoId)
       .maybeSingle();
 
@@ -218,7 +218,12 @@ Deno.serve(async (request) => {
         const link = `${LINK_BASE}${encodeURIComponent(token)}`;
         links.push({ convidado_id: id, convite_id: conviteId, link });
 
-        const mensagem = montarMensagem(nome, clean(evento.titulo), link);
+        const mensagem = montarMensagem(
+          nome,
+          clean(evento.titulo),
+          link,
+          clean(evento.data_limite_confirmacao),
+        );
         const emailResponse = await enviarGmail({
           accessToken: gmailAccessToken,
           from: fromEmail,
@@ -424,11 +429,28 @@ function base64Encode(value: string): string {
   return btoa(binary);
 }
 
-function montarMensagem(nome: string, evento: string, link: string) {
+function montarMensagem(
+  nome: string,
+  evento: string,
+  link: string,
+  prazoConfirmacao: string,
+) {
   const tituloEvento = evento || "seu evento";
-  const texto = `Olá, ${nome}!\n\nVocê está convidado para ${tituloEvento}.\n\nAcesse o link abaixo para conferir os detalhes e confirmar sua presença:\n${link}\n\nSe você não solicitou este convite, ignore esta mensagem.`;
-  const html = `<!doctype html><html lang="pt-BR"><body style="margin:0;background:#fff8f3;font-family:Arial,sans-serif;color:#3f2b25"><div style="max-width:600px;margin:24px auto;background:#fff;border-radius:18px;overflow:hidden"><div style="background:#ffd4c8;padding:28px 30px"><h1 style="margin:0;color:#ef6857">ConfirmaAi</h1><p style="margin:8px 0 0">Convite online</p></div><div style="padding:30px"><h2>Olá, ${escapeHtml(nome)}!</h2><p>Você está convidado para <strong>${escapeHtml(tituloEvento)}</strong>.</p><p>Acesse o botão abaixo para conferir os detalhes e confirmar sua presença:</p><p><a href="${escapeHtml(link)}" style="display:inline-block;background:#ef6857;color:#fff;text-decoration:none;padding:14px 22px;border-radius:10px;font-weight:bold">Conferir convite</a></p><p style="font-size:13px;color:#806c65">Se você não solicitou este convite, ignore esta mensagem.</p></div></div></body></html>`;
+  const prazoTexto = prazoConfirmacao
+    ? `\n\nConfirme sua presença até ${formatarData(prazoConfirmacao)}.`
+    : "";
+  const prazoHtml = prazoConfirmacao
+    ? `<p><strong>Confirme sua presença até ${escapeHtml(formatarData(prazoConfirmacao))}.</strong></p>`
+    : "";
+  const texto = `Olá, ${nome}!\n\nVocê está convidado para ${tituloEvento}.${prazoTexto}\n\nAcesse o link abaixo para conferir os detalhes e confirmar sua presença:\n${link}\n\nSe você não solicitou este convite, ignore esta mensagem.`;
+  const html = `<!doctype html><html lang="pt-BR"><body style="margin:0;background:#fff8f3;font-family:Arial,sans-serif;color:#3f2b25"><div style="max-width:600px;margin:24px auto;background:#fff;border-radius:18px;overflow:hidden"><div style="background:#ffd4c8;padding:28px 30px"><h1 style="margin:0;color:#ef6857">ConfirmaAi</h1><p style="margin:8px 0 0">Convite online</p></div><div style="padding:30px"><h2>Olá, ${escapeHtml(nome)}!</h2><p>Você está convidado para <strong>${escapeHtml(tituloEvento)}</strong>.</p>${prazoHtml}<p>Acesse o botão abaixo para conferir os detalhes e confirmar sua presença:</p><p><a href="${escapeHtml(link)}" style="display:inline-block;background:#ef6857;color:#fff;text-decoration:none;padding:14px 22px;border-radius:10px;font-weight:bold">Conferir convite</a></p><p style="font-size:13px;color:#806c65">Se você não solicitou este convite, ignore esta mensagem.</p></div></div></body></html>`;
   return { texto, html };
+}
+
+function formatarData(value: string): string {
+  const partes = value.split("-");
+  if (partes.length === 3) return `${partes[2]}/${partes[1]}/${partes[0]}`;
+  return value;
 }
 
 function montarResumo(enviados: number, falhas: number, ignorados: number): string {

@@ -19,6 +19,7 @@ class _TelaPrimeiroAcessoFuncionarioState
     extends State<TelaPrimeiroAcessoFuncionario>
     with WidgetsBindingObserver {
   final _formKey = GlobalKey<FormState>();
+  final _emailController = TextEditingController();
   final _senhaController = TextEditingController();
   final _confirmacaoController = TextEditingController();
 
@@ -85,6 +86,7 @@ class _TelaPrimeiroAcessoFuncionarioState
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _mudancasAutenticacao?.cancel();
+    _emailController.dispose();
     _senhaController.dispose();
     _confirmacaoController.dispose();
     super.dispose();
@@ -93,7 +95,8 @@ class _TelaPrimeiroAcessoFuncionarioState
   Future<void> _vincularGoogle() async {
     if (_processando) return;
 
-    if (!_emailConvite.toLowerCase().endsWith('@gmail.com')) {
+    if (_emailConvite.isNotEmpty &&
+        !_emailConvite.toLowerCase().endsWith('@gmail.com')) {
       setState(() {
         _erro = 'Este convite deve ser concluído criando uma senha.';
       });
@@ -194,6 +197,7 @@ class _TelaPrimeiroAcessoFuncionarioState
       if (ConviteFuncionarioLinkServico.instance.possuiTokenPendente) {
         await SessaoServico.instance.concluirConviteFuncionarioComSenha(
           _senhaController.text,
+          email: _emailConvite.isEmpty ? _emailController.text : null,
         );
       } else {
         await SessaoServico.instance.definirSenhaInicial(_senhaController.text);
@@ -244,8 +248,11 @@ class _TelaPrimeiroAcessoFuncionarioState
         .trim();
     final email = (_emailConvite.isNotEmpty ? _emailConvite : sessao.emailAtual)
         .trim();
-    final ehGmail = email.toLowerCase().endsWith('@gmail.com');
-    final deveCriarSenha = !_carregandoConvite && email.isNotEmpty;
+    final ehGmail =
+        email.isEmpty || email.toLowerCase().endsWith('@gmail.com');
+    final precisaInformarEmail = !_carregandoConvite && email.isEmpty;
+    final deveCriarSenha = !_carregandoConvite &&
+        (email.isNotEmpty || precisaInformarEmail);
 
     return PopScope(
       canPop: false,
@@ -310,6 +317,25 @@ class _TelaPrimeiroAcessoFuncionarioState
                                   ),
                                 ],
                               ),
+                              if (precisaInformarEmail) ...[
+                                const SizedBox(height: 12),
+                                TextFormField(
+                                  controller: _emailController,
+                                  keyboardType: TextInputType.emailAddress,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Seu e-mail',
+                                    hintText: 'voce@exemplo.com',
+                                    prefixIcon: Icon(Icons.alternate_email),
+                                    border: OutlineInputBorder(),
+                                  ),
+                                  validator: (valor) {
+                                    final texto = valor?.trim() ?? '';
+                                    return texto.contains('@')
+                                        ? null
+                                        : 'Informe um e-mail válido.';
+                                  },
+                                ),
+                              ],
                             ],
                           ),
                         ),

@@ -297,10 +297,19 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
   String _textoConvite(Convidado convidado, String link) {
     final evento =
         CasamentoAtualServico.instance.casamento?.titulo ?? 'seu evento';
+    final prazo = CasamentoAtualServico.instance.casamento?.dataLimiteConfirmacao;
+    final prazoTexto = prazo == null
+        ? ''
+        : '\n\nConfirme sua presença até ${_formatarData(prazo)}.';
     return 'Olá, ${convidado.nome}!\n\n'
         'Você está convidado para $evento.\n\n'
         'Acesse o link abaixo para conferir os detalhes e confirmar sua '
-        'presença:\n$link';
+        'presença:$prazoTexto\n$link';
+  }
+
+  String _formatarData(DateTime data) {
+    return '${data.day.toString().padLeft(2, '0')}/'
+        '${data.month.toString().padLeft(2, '0')}/${data.year}';
   }
 
   Future<void> _prepararEnvio(

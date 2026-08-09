@@ -893,7 +893,11 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
         FilledButton.icon(
           onPressed: () => _confirmarPublicacao(resultado),
           icon: const Icon(Icons.cloud_upload_outlined),
-          label: const Text('Substituir lista atual'),
+          label: Text(
+            (_possuiListaAtual ?? false)
+                ? 'Substituir lista atual'
+                : 'Salvar primeira lista',
+          ),
         ),
         const SizedBox(height: 8),
         const Text(

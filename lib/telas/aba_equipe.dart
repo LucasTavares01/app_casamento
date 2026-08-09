@@ -177,8 +177,7 @@ class _AbaEquipeState extends State<AbaEquipe> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Enviar também pelo WhatsApp?'),
         content: const Text(
-          'O convite por e-mail já foi processado. Deseja abrir o WhatsApp '
-          'com a mensagem e o link seguro do convite?',
+          'Deseja abrir o WhatsApp com a mensagem e o link seguro do convite?',
         ),
         actions: [
           TextButton(
@@ -639,9 +638,17 @@ class _DialogMembroEquipeState extends State<_DialogMembroEquipe> {
                       labelText: 'E-mail',
                       border: OutlineInputBorder(),
                     ),
-                    validator: (valor) => valor?.trim().contains('@') ?? false
-                        ? null
-                        : 'Informe um e-mail válido.',
+                    validator: (valor) {
+                      final email = valor?.trim() ?? '';
+                      final telefone = _normalizarTelefone(_telefone.text);
+                      if (email.isEmpty && telefone == null) {
+                        return 'Informe um e-mail ou um WhatsApp.';
+                      }
+                      if (email.isNotEmpty && !email.contains('@')) {
+                        return 'Informe um e-mail válido.';
+                      }
+                      return null;
+                    },
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
@@ -821,9 +828,17 @@ class _DialogConvidarFuncionarioState
                 labelText: 'E-mail',
                 border: OutlineInputBorder(),
               ),
-              validator: (valor) => valor?.contains('@') ?? false
-                  ? null
-                  : 'Informe um e-mail válido.',
+              validator: (valor) {
+                final email = valor?.trim() ?? '';
+                final telefone = _normalizarTelefone(_telefone.text);
+                if (email.isEmpty && telefone == null) {
+                  return 'Informe um e-mail ou um WhatsApp.';
+                }
+                if (email.isNotEmpty && !email.contains('@')) {
+                  return 'Informe um e-mail válido.';
+                }
+                return null;
+              },
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -845,8 +860,8 @@ class _DialogConvidarFuncionarioState
             ),
             const SizedBox(height: 12),
             const Text(
-              'O e-mail é obrigatório para criar o acesso. O WhatsApp é '
-              'opcional e abre uma mensagem pronta com o convite.',
+              'Informe pelo menos um contato. O e-mail envia o convite por '
+              'e-mail; o WhatsApp abre uma mensagem pronta com o link seguro.',
             ),
           ],
         ),

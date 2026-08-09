@@ -51,12 +51,11 @@ class _TelaCriarContaState extends State<TelaCriarConta>
       return;
     }
 
-    if (SessaoServico.instance.possuiSessaoLocal) {
-      unawaited(_aguardarCriacaoGoogle());
-    } else {
-      _loginGoogleEmAndamento = false;
-      setState(() => _criando = false);
-    }
+    // O retorno do navegador pode ocorrer alguns instantes antes de o
+    // Supabase disponibilizar a sessão. Mantenha o bloqueio ativo nesse
+    // intervalo; liberá-lo aqui fazia o popup aparecer sozinho depois,
+    // enquanto a tela já parecia pronta para novos cliques.
+    unawaited(_aguardarCriacaoGoogle());
   }
 
   @override
@@ -197,26 +196,21 @@ class _TelaCriarContaState extends State<TelaCriarConta>
     _aguardandoRetornoGoogle = true;
 
     try {
-      for (var tentativa = 0; tentativa < 20; tentativa++) {
+      for (var tentativa = 0; tentativa < 40; tentativa++) {
         if (!mounted) return;
 
         if (!SessaoServico.instance.possuiSessaoLocal) {
-          if (tentativa == 0) {
-            await Future<void>.delayed(const Duration(milliseconds: 300));
-            continue;
-          }
-          _loginGoogleEmAndamento = false;
-          if (mounted) setState(() => _criando = false);
-          return;
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          continue;
         }
 
         try {
           final papeis = await CasamentoAtualServico.instance
               .obterPapeisContaAtual();
-          final fluxoAindaPendente = await SessaoServico.instance
-              .possuiPerfilCerimonialistaGooglePendente();
-
-          if (papeis.cerimonialista || !fluxoAindaPendente) {
+          // Só liberamos a tela quando o vínculo administrativo já existe no
+          // banco. O marcador local pode ser removido antes do RPC terminar;
+          // usá-lo como sinal de sucesso deixava uma janela para novos cliques.
+          if (papeis.cerimonialista) {
             _loginGoogleEmAndamento = false;
             if (mounted) setState(() => _criando = false);
             return;
@@ -246,19 +240,21 @@ class _TelaCriarContaState extends State<TelaCriarConta>
   Widget build(BuildContext context) {
     return PopScope(
       canPop: !_criando,
-      child: Scaffold(
-        appBar: AppBar(title: const Text('Criar conta')),
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 460),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
+      child: Stack(
+        children: [
+          Scaffold(
+            appBar: AppBar(title: const Text('Criar conta')),
+            body: SafeArea(
+              child: Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 460),
+                    child: Form(
+                      key: _formKey,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
                     const Text(
                       'Crie sua conta grátis',
                       style: TextStyle(
@@ -366,13 +362,51 @@ class _TelaCriarContaState extends State<TelaCriarConta>
                         ),
                       ),
                     ),
-                  ],
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ),
           ),
-        ),
-      ),
+          if (_criando && _loginGoogleEmAndamento) ...[
+            const Positioned.fill(
+              child: ModalBarrier(
+                dismissible: false,
+                color: Colors.black26,
+              ),
+            ),
+            Center(
+              child: Card(
+                margin: const EdgeInsets.all(32),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 28,
+                    vertical: 24,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 18),
+                      Text(
+                        'Finalizando criação da sua conta...',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Aguarde enquanto confirmamos seu perfil de cerimonialista.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

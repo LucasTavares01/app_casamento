@@ -32,6 +32,7 @@ class CasamentoAtual {
   final String? rotuloPessoas;
   final Map<String, dynamic> detalhesEvento;
   final DateTime? dataEvento;
+  final DateTime? dataLimiteConfirmacao;
   final String? horarioEvento;
   final String? localEvento;
   final String status;
@@ -47,6 +48,7 @@ class CasamentoAtual {
     this.rotuloPessoas,
     this.detalhesEvento = const {},
     required this.dataEvento,
+    this.dataLimiteConfirmacao,
     required this.horarioEvento,
     required this.localEvento,
     required this.status,
@@ -86,6 +88,7 @@ class CasamentoAtual {
       rotuloPessoas: rotuloPessoas,
       detalhesEvento: detalhesEvento,
       dataEvento: dataEvento,
+      dataLimiteConfirmacao: dataLimiteConfirmacao,
       horarioEvento: horarioEvento,
       localEvento: localEvento,
       status: novoStatus,
@@ -201,7 +204,7 @@ class CasamentoAtualServico {
     final casamentos = await _supabase
         .from('casamentos')
         .select(
-          'id, organizacao_id, titulo, nome_pessoa_1, nome_pessoa_2, tipo_evento, rotulo_pessoas, detalhes_evento, data_evento, hora_evento, local_evento, status',
+          'id, organizacao_id, titulo, nome_pessoa_1, nome_pessoa_2, tipo_evento, rotulo_pessoas, detalhes_evento, data_evento, data_limite_confirmacao, hora_evento, local_evento, status',
         )
         .order('data_evento', ascending: false);
 
@@ -265,6 +268,9 @@ class CasamentoAtualServico {
           dataEvento: DateTime.tryParse(
             registro['data_evento']?.toString() ?? '',
           ),
+          dataLimiteConfirmacao: DateTime.tryParse(
+            registro['data_limite_confirmacao']?.toString() ?? '',
+          ),
           horarioEvento: _textoOpcional(registro['hora_evento']),
           localEvento: _textoOpcional(registro['local_evento']),
           status: registro['status']?.toString() ?? 'rascunho',
@@ -314,6 +320,8 @@ class CasamentoAtualServico {
               'rotulo_pessoas': casamento.rotuloPessoas,
               'detalhes_evento': casamento.detalhesEvento,
               'data_evento': casamento.dataEvento?.toIso8601String(),
+              'data_limite_confirmacao':
+                  casamento.dataLimiteConfirmacao?.toIso8601String(),
               'horario_evento': casamento.horarioEvento,
               'local_evento': casamento.localEvento,
               'status': casamento.status,
@@ -384,6 +392,9 @@ class CasamentoAtualServico {
       rotuloPessoas: _textoOpcional(registro['rotulo_pessoas']),
       detalhesEvento: _mapa(registro['detalhes_evento']),
       dataEvento: DateTime.tryParse(registro['data_evento']?.toString() ?? ''),
+      dataLimiteConfirmacao: DateTime.tryParse(
+        registro['data_limite_confirmacao']?.toString() ?? '',
+      ),
       horarioEvento: _textoOpcional(registro['horario_evento']),
       localEvento: _textoOpcional(registro['local_evento']),
       status: registro['status']?.toString() ?? 'ativo',
@@ -547,6 +558,7 @@ class CasamentoAtualServico {
     String? rotuloPessoas,
     Map<String, dynamic>? detalhesEvento,
     DateTime? dataEvento,
+    DateTime? dataLimiteConfirmacao,
     String? horarioEvento,
     String? localEvento,
   }) async {
@@ -586,12 +598,16 @@ class CasamentoAtualServico {
           'detalhes_evento': detalhesEvento ?? const <String, dynamic>{},
           'evento_completo': true,
           'data_evento': dataEvento.toIso8601String().split('T').first,
+          'data_limite_confirmacao': dataLimiteConfirmacao
+              ?.toIso8601String()
+              .split('T')
+              .first,
           'hora_evento': _textoOpcional(horarioEvento),
           'local_evento': localLimpo,
           'status': 'rascunho',
         })
         .select(
-          'id, organizacao_id, titulo, nome_pessoa_1, nome_pessoa_2, tipo_evento, rotulo_pessoas, detalhes_evento, data_evento, hora_evento, local_evento, status',
+          'id, organizacao_id, titulo, nome_pessoa_1, nome_pessoa_2, tipo_evento, rotulo_pessoas, detalhes_evento, data_evento, data_limite_confirmacao, hora_evento, local_evento, status',
         )
         .single();
 
@@ -606,6 +622,9 @@ class CasamentoAtualServico {
       rotuloPessoas: _textoOpcional(registro['rotulo_pessoas']),
       detalhesEvento: _mapa(registro['detalhes_evento']),
       dataEvento: DateTime.tryParse(registro['data_evento']?.toString() ?? ''),
+      dataLimiteConfirmacao: DateTime.tryParse(
+        registro['data_limite_confirmacao']?.toString() ?? '',
+      ),
       horarioEvento: _textoOpcional(registro['hora_evento']),
       localEvento: _textoOpcional(registro['local_evento']),
       status: registro['status']?.toString() ?? 'rascunho',
@@ -622,6 +641,7 @@ class CasamentoAtualServico {
     String? rotuloPessoas,
     Map<String, dynamic>? detalhesEvento,
     required DateTime dataEvento,
+    DateTime? dataLimiteConfirmacao,
     required String horarioEvento,
     String? localEvento,
   }) async {
@@ -642,13 +662,17 @@ class CasamentoAtualServico {
           'rotulo_pessoas': _textoOpcional(rotuloPessoas),
           'detalhes_evento': detalhesEvento ?? const <String, dynamic>{},
           'data_evento': dataEvento.toIso8601String().split('T').first,
+          'data_limite_confirmacao': dataLimiteConfirmacao
+              ?.toIso8601String()
+              .split('T')
+              .first,
           'hora_evento': horarioLimpo,
           'local_evento': localLimpo,
           'evento_completo': true,
         })
         .eq('id', casamento.id)
         .select(
-          'id, organizacao_id, titulo, nome_pessoa_1, nome_pessoa_2, tipo_evento, rotulo_pessoas, detalhes_evento, data_evento, hora_evento, local_evento, status',
+          'id, organizacao_id, titulo, nome_pessoa_1, nome_pessoa_2, tipo_evento, rotulo_pessoas, detalhes_evento, data_evento, data_limite_confirmacao, hora_evento, local_evento, status',
         )
         .single();
 
@@ -663,6 +687,9 @@ class CasamentoAtualServico {
       rotuloPessoas: _textoOpcional(registro['rotulo_pessoas']),
       detalhesEvento: _mapa(registro['detalhes_evento']),
       dataEvento: DateTime.tryParse(registro['data_evento']?.toString() ?? ''),
+      dataLimiteConfirmacao: DateTime.tryParse(
+        registro['data_limite_confirmacao']?.toString() ?? '',
+      ),
       horarioEvento: _textoOpcional(registro['hora_evento']),
       localEvento: _textoOpcional(registro['local_evento']),
       status: registro['status']?.toString() ?? casamento.status,
@@ -775,6 +802,9 @@ class CasamentoAtualServico {
         rotuloPessoas: _textoOpcional(dados['rotulo_pessoas']),
         detalhesEvento: _mapa(dados['detalhes_evento']),
         dataEvento: DateTime.tryParse(dados['data_evento']?.toString() ?? ''),
+        dataLimiteConfirmacao: DateTime.tryParse(
+          dados['data_limite_confirmacao']?.toString() ?? '',
+        ),
         horarioEvento: _textoOpcional(dados['horario_evento']),
         localEvento: _textoOpcional(dados['local_evento']),
         status: dados['status']?.toString() ?? 'ativo',
@@ -870,6 +900,8 @@ class CasamentoAtualServico {
       'rotulo_pessoas': casamento.rotuloPessoas,
       'detalhes_evento': casamento.detalhesEvento,
       'data_evento': casamento.dataEvento?.toIso8601String(),
+      'data_limite_confirmacao':
+          casamento.dataLimiteConfirmacao?.toIso8601String(),
       'horario_evento': casamento.horarioEvento,
       'local_evento': casamento.localEvento,
       'status': casamento.status,

@@ -48,11 +48,15 @@ Deno.serve(async (request) => {
     const email = normalizeEmail(body?.email);
     const telefoneInformado = normalizePhone(body?.telefone);
 
-    if (!casamentoId || (!funcionarioId && (!nome || !isValidEmail(email)))) {
+    if (!casamentoId || (!funcionarioId && !nome)) {
       return json(
-        { mensagem: "Funcionário, e-mail e evento são obrigatórios." },
+        { mensagem: "Nome e evento são obrigatórios." },
         400,
       );
+    }
+
+    if (email && !isValidEmail(email)) {
+      return json({ mensagem: "E-mail inválido." }, 400);
     }
 
     if (text(body?.telefone) && !telefoneInformado) {
@@ -117,7 +121,7 @@ Deno.serve(async (request) => {
     }
 
     let usuarioId: string;
-    let emailDestino: string;
+    let emailDestino: string | null;
     let nomeDestino: string;
     let telefoneDestino: string | null = telefoneInformado;
     let conviteEnviado = false;
@@ -149,25 +153,69 @@ Deno.serve(async (request) => {
       telefoneDestino = normalizePhone(funcionario.telefone);
       contaJaExistia = true;
 
-      if (!isValidEmail(emailDestino)) {
+      if (emailDestino && !isValidEmail(emailDestino)) {
         return json(
-          { mensagem: "O funcionário não possui um e-mail válido." },
+          { mensagem: "O funcionário possui um e-mail inválido." },
+          400,
+        );
+      }
+      if (!emailDestino && !telefoneDestino) {
+        return json(
+          { mensagem: "O funcionário precisa ter um e-mail ou WhatsApp." },
           400,
         );
       }
     } else {
-      const perfil = await buscarPerfilPorEmail(admin, email);
+      const perfil = isValidEmail(email)
+        ? await buscarPerfilPorEmail(admin, email)
+        : { usuarioId: null, erro: null, status: 200 };
 
       if (perfil.erro) {
         return json({ mensagem: perfil.erro }, perfil.status);
       }
 
-      emailDestino = email;
+      emailDestino = isValidEmail(email) ? email : null;
       nomeDestino = nome;
 
       if (perfil.usuarioId) {
         usuarioId = perfil.usuarioId;
         contaJaExistia = true;
+      } else if (!emailDestino) {
+        // O convite por WhatsApp não precisa de um e-mail. O usuário Auth
+        // técnico é substituído pela conta Google ou pelo e-mail informado
+        // na tela de primeiro acesso.
+        const emailTecnico = `convite-${crypto.randomUUID()}@convites.confirmaai.local`;
+        const { data: convite, error: erroConvite } =
+          await admin.auth.admin.createUser({
+            email: emailTecnico,
+            password: gerarSenhaInterna(),
+            email_confirm: true,
+            user_metadata: {
+              nome,
+              marca_nome: "ConfirmaAi",
+              casamento_nome: text(casamento.titulo),
+              evento_nome: text(casamento.titulo),
+              evento_tipo: text(casamento.tipo_evento),
+              evento_data: text(casamento.data_evento),
+              evento_horario: text(casamento.hora_evento),
+              evento_local: text(casamento.local_evento),
+              casamento_id: casamentoId,
+              abrir_como_funcionario: true,
+              criar_organizacao: false,
+              precisa_definir_senha: true,
+              convite_app_token: tokenConvite,
+              convite_app_link: linkConviteApp,
+            },
+          });
+
+        if (erroConvite || !convite.user?.id) {
+          return json(
+            { mensagem: "Não foi possível preparar o acesso do funcionário." },
+            500,
+          );
+        }
+
+        usuarioId = convite.user.id;
       } else {
         const { data: convite, error: erroConvite } =
           await admin.auth.admin.inviteUserByEmail(email, {
@@ -348,7 +396,12 @@ Deno.serve(async (request) => {
 
     const notificacao: ResultadoNotificacao = conviteEnviado
       ? { enviada: true, mensagem: null }
-      : await enviarLinkDeAcesso(admin, emailDestino);
+      : emailDestino
+      ? await enviarLinkDeAcesso(admin, emailDestino)
+      : {
+          enviada: false,
+          mensagem: "Envie o link seguro pelo WhatsApp para o funcionário.",
+        };
 
     const linkWhatsApp = telefoneDestino ? linkConviteApp : null;
 
@@ -581,6 +634,12 @@ function gerarTokenConvite(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return base64Url(bytes);
+}
+
+function gerarSenhaInterna(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return `C!${base64Url(bytes)}9a`;
 }
 
 async function sha256Hex(value: string): Promise<string> {

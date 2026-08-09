@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../servicos/casamento_atual_servico.dart';
 import '../servicos/relatorio_excel_servico.dart';
@@ -56,6 +57,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
   _ModoPerfil _modoPerfil = _ModoPerfil.funcionario;
   bool _habilitandoCerimonialista = false;
   bool _mostrarPesquisa = false;
+  bool _confirmandoSaida = false;
 
   @override
   void initState() {
@@ -116,6 +118,32 @@ class _TelaCasamentosState extends State<TelaCasamentos>
     _focoPesquisa.unfocus();
     _pesquisa.clear();
     setState(() => _mostrarPesquisa = false);
+  }
+
+  Future<void> _confirmarSaidaDoAplicativo() async {
+    if (_confirmandoSaida || !mounted) return;
+    _confirmandoSaida = true;
+    final sair = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Sair do aplicativo?'),
+        content: const Text('Tem certeza que deseja sair do ConfirmaAi?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Continuar no app'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Sair'),
+          ),
+        ],
+      ),
+    );
+    _confirmandoSaida = false;
+    if (sair == true) {
+      await SystemNavigator.pop();
+    }
   }
 
   Future<void> _carregarPermissao() async {
@@ -460,7 +488,12 @@ class _TelaCasamentosState extends State<TelaCasamentos>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope<void>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) unawaited(_confirmarSaidaDoAplicativo());
+      },
+      child: Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
         title: Column(
@@ -634,6 +667,7 @@ class _TelaCasamentosState extends State<TelaCasamentos>
             ],
           );
         },
+      ),
       ),
     );
   }
@@ -1121,6 +1155,7 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
   late final TextEditingController _local;
   late TipoEvento _tipo;
   DateTime? _data;
+  DateTime? _dataLimiteConfirmacao;
   TimeOfDay? _hora;
   bool _salvando = false;
   bool _validouData = false;
@@ -1140,6 +1175,7 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
     _local = TextEditingController(text: existente?.localEvento ?? '');
     _tipo = existente?.tipoEvento ?? TipoEvento.casamento;
     _data = existente?.dataEvento;
+    _dataLimiteConfirmacao = existente?.dataLimiteConfirmacao;
     final hora = existente?.horarioEvento;
     if (hora != null && hora.length >= 5) {
       final partes = hora.split(':');
@@ -1197,6 +1233,18 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
     if (hora != null) setState(() => _hora = hora);
   }
 
+  Future<void> _selecionarDataLimiteConfirmacao() async {
+    final data = await showDatePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+      initialDate: _dataLimiteConfirmacao ?? _data ?? DateTime.now(),
+      locale: const Locale('pt', 'BR'),
+      builder: _construirDialogoLocalizado,
+    );
+    if (data != null) setState(() => _dataLimiteConfirmacao = data);
+  }
+
   Widget _construirDialogoLocalizado(BuildContext context, Widget? child) {
     final dadosTela = MediaQuery.of(
       context,
@@ -1230,6 +1278,7 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
               tipoEvento: _tipo,
               nomePessoa1: _pessoas.text,
               dataEvento: _data!,
+              dataLimiteConfirmacao: _dataLimiteConfirmacao,
               horarioEvento: horario,
               localEvento: _local.text,
             )
@@ -1238,6 +1287,7 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
               tipoEvento: _tipo,
               nomePessoa1: _pessoas.text,
               dataEvento: _data!,
+              dataLimiteConfirmacao: _dataLimiteConfirmacao,
               horarioEvento: horario,
               localEvento: _local.text,
             );
@@ -1366,6 +1416,38 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
                     child: Text(
                       'O horário é obrigatório.',
                       style: TextStyle(color: Colors.red),
+                    ),
+                  ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _salvando ? null : _selecionarDataLimiteConfirmacao,
+                    icon: const Icon(Icons.event_available_outlined),
+                    label: Text(
+                      _dataLimiteConfirmacao == null
+                          ? 'Definir prazo de confirmação (opcional)'
+                          : 'Confirmação até ${_formatarData(_dataLimiteConfirmacao!)}',
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Theme.of(context).colorScheme.primary,
+                      side: BorderSide(
+                        color: Theme.of(context).colorScheme.primary,
+                        width: 1.2,
+                      ),
+                      minimumSize: const Size.fromHeight(48),
+                    ),
+                  ),
+                ),
+                if (_dataLimiteConfirmacao != null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: _salvando
+                          ? null
+                          : () => setState(() => _dataLimiteConfirmacao = null),
+                      icon: const Icon(Icons.clear, size: 17),
+                      label: const Text('Remover prazo'),
                     ),
                   ),
               ],

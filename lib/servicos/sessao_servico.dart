@@ -28,7 +28,8 @@ class DadosConviteFuncionario {
 
   const DadosConviteFuncionario({required this.email, required this.nome});
 
-  bool get ehGmail => email.toLowerCase().endsWith('@gmail.com');
+  bool get ehGmail =>
+      email.isEmpty || email.toLowerCase().endsWith('@gmail.com');
 }
 
 /// Autenticação da conta pelo Supabase Auth.
@@ -644,10 +645,6 @@ class SessaoServico {
 
     final email = (dados['email'] as String?)?.trim().toLowerCase() ?? '';
     final nome = (dados['nome'] as String?)?.trim() ?? '';
-    if (email.isEmpty) {
-      throw const AuthException('O convite não informou um e-mail válido.');
-    }
-
     return DadosConviteFuncionario(email: email, nome: nome);
   }
 
@@ -739,7 +736,10 @@ class SessaoServico {
   /// Conclui um convite próprio do ConfirmaAi sem depender de uma sessão OTP
   /// aberta pelo navegador. O servidor valida o token e só então cria a
   /// sessão normal por e-mail e senha.
-  Future<void> concluirConviteFuncionarioComSenha(String senha) async {
+  Future<void> concluirConviteFuncionarioComSenha(
+    String senha, {
+    String? email,
+  }) async {
     final token = ConviteFuncionarioLinkServico.instance.tokenPendente;
     if (token == null || token.isEmpty) {
       throw const AuthException('O convite não está disponível neste aparelho.');
@@ -747,7 +747,12 @@ class SessaoServico {
 
     final resposta = await _supabase.functions.invoke(
       'concluir-convite-funcionario',
-      body: {'token': token, 'acao': 'senha', 'senha': senha},
+      body: {
+        'token': token,
+        'acao': 'senha',
+        'senha': senha,
+        'email': email?.trim(),
+      },
     );
     final dados = resposta.data;
     if (resposta.status < 200 || resposta.status >= 300 || dados is! Map) {
@@ -759,14 +764,14 @@ class SessaoServico {
       );
     }
 
-    final email = (dados['email'] as String?)?.trim() ?? '';
-    if (email.isEmpty) {
+    final emailDaResposta = (dados['email'] as String?)?.trim() ?? '';
+    if (emailDaResposta.isEmpty) {
       throw const AuthException('O convite não informou um e-mail válido.');
     }
 
     await prepararNovaAutenticacao();
     await _supabase.auth.signInWithPassword(
-      email: _normalizarEmail(email),
+      email: _normalizarEmail(emailDaResposta),
       password: senha,
     );
     await ConviteFuncionarioLinkServico.instance.limpar();
@@ -957,7 +962,19 @@ class SessaoServico {
   }
 
   Future<void> _encerrarSessaoSemPerfilPublico() async {
+    final foiLoginGoogleApenasParaVerificacao =
+        await possuiLoginGooglePendente();
     try {
+      if (foiLoginGoogleApenasParaVerificacao) {
+        try {
+          await _supabase.rpc('cancelar_login_google_sem_conta_v1');
+        } catch (erro) {
+          // Se o RPC ainda não estiver disponível, o logout local continua
+          // protegendo a tela. A próxima tentativa do cadastro poderá reparar
+          // o usuário Auth órfão sem abrir a conta automaticamente.
+          debugPrint('Não foi possível limpar o Auth Google temporário: $erro');
+        }
+      }
       await _limparTodosOsDadosLocais();
     } finally {
       await RealtimeServico.instance.encerrar();

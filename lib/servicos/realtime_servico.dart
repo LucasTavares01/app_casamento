@@ -61,6 +61,30 @@ class RealtimeServico {
         .onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
+          table: 'casamentos',
+          callback: (_) => _aoReceberAlteracao(),
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'membros_casamento',
+          callback: (_) => _aoReceberAlteracao(),
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'membros_organizacao',
+          callback: (_) => _aoReceberAlteracao(),
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'funcionarios_organizacao',
+          callback: (_) => _aoReceberAlteracao(),
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
           table: 'conflitos_sincronizacao',
           callback: (_) => _aoReceberAlteracao(),
         )

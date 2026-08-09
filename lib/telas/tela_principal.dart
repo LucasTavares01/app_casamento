@@ -46,6 +46,7 @@ class _TelaPrincipalState extends State<TelaPrincipal>
   bool _tratandoAcessoRevogado = false;
   bool _tratandoEventoFinalizado = false;
   bool _eventoJaFinalizadoAoAbrir = false;
+  bool _confirmandoSaida = false;
 
   int _abaSelecionada = 0;
 
@@ -593,6 +594,30 @@ class _TelaPrincipalState extends State<TelaPrincipal>
     );
   }
 
+  Future<void> _confirmarSaidaDoAplicativo() async {
+    if (_confirmandoSaida || !mounted) return;
+    _confirmandoSaida = true;
+    final sair = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Sair do aplicativo?'),
+        content: const Text('Tem certeza que deseja sair do ConfirmaAi?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Continuar no app'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Sair'),
+          ),
+        ],
+      ),
+    );
+    _confirmandoSaida = false;
+    if (sair == true) await SystemNavigator.pop();
+  }
+
   IconData _obterIconeSincronizacao() {
     switch (_sincronizacao.status) {
       case StatusSincronizacao.aguardando:
@@ -780,7 +805,12 @@ class _TelaPrincipalState extends State<TelaPrincipal>
       _abaSelecionada = 0;
     }
 
-    return Scaffold(
+    return PopScope<void>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) unawaited(_confirmarSaidaDoAplicativo());
+      },
+      child: Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
         title: Column(
@@ -867,6 +897,7 @@ class _TelaPrincipalState extends State<TelaPrincipal>
           });
         },
         destinations: navegacao,
+      ),
       ),
     );
   }
