@@ -1,6 +1,0 @@
-# Copie este arquivo para android/key.properties e preencha com sua chave de upload.
-# Nunca versionar android/key.properties nem o arquivo .jks/.keystore.
-storePassword=COLOQUE_A_SENHA_DO_KEYSTORE
-keyPassword=COLOQUE_A_SENHA_DA_CHAVE
-keyAlias=confirmaai-upload
-storeFile=C:/caminho/seguro/confirmaai-upload.jks

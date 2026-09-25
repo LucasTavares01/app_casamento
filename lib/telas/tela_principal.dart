@@ -582,7 +582,15 @@ class _TelaPrincipalState extends State<TelaPrincipal>
       return;
     }
 
-    await SessaoServico.instance.encerrarSessao();
+    try {
+      await SessaoServico.instance.encerrarSessao();
+    } on AlteracoesPendentesSessaoException catch (erro) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(erro.mensagem)));
+      return;
+    }
 
     if (!mounted) {
       return;
@@ -811,93 +819,93 @@ class _TelaPrincipalState extends State<TelaPrincipal>
         if (!didPop) unawaited(_confirmarSaidaDoAplicativo());
       },
       child: Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (casamento == null)
-              const Text(
-                'Gestão do Evento',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
-              )
-            else ...[
-              Text(
-                casamento.tipoEvento.rotulo,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              if (identificacaoEvento != null &&
-                  identificacaoEvento.trim().isNotEmpty)
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          title: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (casamento == null)
+                const Text(
+                  'Gestão do Evento',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
+                )
+              else ...[
                 Text(
-                  identificacaoEvento,
+                  casamento.tipoEvento.rotulo,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
+                if (identificacaoEvento != null &&
+                    identificacaoEvento.trim().isNotEmpty)
+                  Text(
+                    identificacaoEvento,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+              ],
             ],
+          ),
+          actions: [
+            _construirBotaoSincronizacao(),
+            _construirMenuEvento(
+              ehAdmin: ehAdmin,
+              somenteLeitura: somenteLeitura,
+            ),
           ],
         ),
-        actions: [
-          _construirBotaoSincronizacao(),
-          _construirMenuEvento(
-            ehAdmin: ehAdmin,
-            somenteLeitura: somenteLeitura,
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          Positioned.fill(child: telas[_abaSelecionada]),
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: IgnorePointer(
-              ignoring: !_deveMostrarAvisoSincronizacao,
-              child: AnimatedSlide(
-                duration: const Duration(milliseconds: 220),
-                curve: Curves.easeOutCubic,
-                offset: _deveMostrarAvisoSincronizacao
-                    ? Offset.zero
-                    : const Offset(0, -1),
-                child: AnimatedOpacity(
-                  duration: const Duration(milliseconds: 180),
-                  opacity: _deveMostrarAvisoSincronizacao ? 1 : 0,
-                  child: _construirBarraSincronizacao(),
+        body: Stack(
+          children: [
+            Positioned.fill(child: telas[_abaSelecionada]),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: IgnorePointer(
+                ignoring: !_deveMostrarAvisoSincronizacao,
+                child: AnimatedSlide(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  offset: _deveMostrarAvisoSincronizacao
+                      ? Offset.zero
+                      : const Offset(0, -1),
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 180),
+                    opacity: _deveMostrarAvisoSincronizacao ? 1 : 0,
+                    child: _construirBarraSincronizacao(),
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _abaSelecionada + 1,
-        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-        onDestinationSelected: (index) {
-          FocusManager.instance.primaryFocus?.unfocus();
+          ],
+        ),
+        bottomNavigationBar: NavigationBar(
+          selectedIndex: _abaSelecionada + 1,
+          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+          onDestinationSelected: (index) {
+            FocusManager.instance.primaryFocus?.unfocus();
 
-          if (index == 0) {
-            _abrirMeusCasamentos();
-            return;
-          }
+            if (index == 0) {
+              _abrirMeusCasamentos();
+              return;
+            }
 
-          setState(() {
-            _abaSelecionada = index - 1;
-          });
-        },
-        destinations: navegacao,
-      ),
+            setState(() {
+              _abaSelecionada = index - 1;
+            });
+          },
+          destinations: navegacao,
+        ),
       ),
     );
   }

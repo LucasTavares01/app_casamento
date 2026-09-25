@@ -302,8 +302,9 @@ class ImportacaoListaServico {
   }
 
   Future<ResultadoPublicacaoLista> publicarLista(
-    ResultadoPreviaImportacao resultado,
-  ) async {
+    ResultadoPreviaImportacao resultado, {
+    required ModoImportacaoLista modo,
+  }) async {
     final problemas = validarParaPublicacao(resultado);
     if (problemas.isNotEmpty) {
       throw ImportacaoListaException(problemas.join('\n'));
@@ -322,7 +323,10 @@ class ImportacaoListaServico {
           .invoke(
             'publicar-lista-convidados',
             body: {
-              'resultado': resultado.toJson(),
+              'resultado': {
+                ...resultado.toJson(),
+                'modo_importacao': modo.valorJson,
+              },
               'casamento_id': CasamentoAtualServico.instance.casamentoId,
             },
           )
@@ -333,7 +337,7 @@ class ImportacaoListaServico {
       if (resposta.status < 200 || resposta.status >= 300) {
         throw ImportacaoListaException(
           _obterMensagemErro(dados) ??
-              'O servidor não conseguiu substituir a lista.',
+              'O servidor não conseguiu publicar a lista.',
         );
       }
 
@@ -352,8 +356,8 @@ class ImportacaoListaServico {
     } on FunctionException catch (erro) {
       final detalhes = _converterMapa(erro.details);
       throw ImportacaoListaException(
-        _obterMensagemErro(detalhes) ??
-            'Não foi possível acessar o publicador da lista. '
+          _obterMensagemErro(detalhes) ??
+              'Não foi possível publicar a lista. '
                 'Confirme se a Edge Function foi publicada.',
       );
     } on SocketException {
@@ -368,8 +372,8 @@ class ImportacaoListaServico {
       final texto = erro.toString().trim();
       throw ImportacaoListaException(
         texto.isEmpty
-            ? 'Não foi possível substituir a lista.'
-            : 'Não foi possível substituir a lista: $texto',
+            ? 'Não foi possível publicar a lista.'
+            : 'Não foi possível publicar a lista: $texto',
       );
     }
   }

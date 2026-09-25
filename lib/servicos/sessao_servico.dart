@@ -42,8 +42,7 @@ class SessaoServico {
 
   static final SessaoServico instance = SessaoServico._();
 
-  static const String _chaveLoginGooglePendente =
-      'login_google_pendente_em';
+  static const String _chaveLoginGooglePendente = 'login_google_pendente_em';
   static const String _chaveVinculoGooglePendente =
       'vinculo_google_convite_pendente_em';
   static const String _chavePerfilCerimonialistaGooglePendente =
@@ -52,10 +51,12 @@ class SessaoServico {
       'cadastro_cerimonialista_pendente_em';
   static const Duration _validadeLoginGooglePendente = Duration(minutes: 15);
   static const Duration _validadeVinculoGooglePendente = Duration(minutes: 15);
-  static const Duration _validadePerfilCerimonialistaGooglePendente =
-      Duration(minutes: 15);
-  static const Duration _validadeCadastroCerimonialistaPendente =
-      Duration(minutes: 30);
+  static const Duration _validadePerfilCerimonialistaGooglePendente = Duration(
+    minutes: 15,
+  );
+  static const Duration _validadeCadastroCerimonialistaPendente = Duration(
+    minutes: 30,
+  );
 
   final BancoLocal _banco = bancoLocal;
   final SupabaseClient _supabase = Supabase.instance.client;
@@ -179,8 +180,7 @@ class SessaoServico {
         await possuiCadastroCerimonialistaPendente();
 
     if (resultadoUsuario.validadoOnline) {
-      var papeis =
-          await CasamentoAtualServico.instance.obterPapeisContaAtual();
+      var papeis = await CasamentoAtualServico.instance.obterPapeisContaAtual();
 
       if (!papeis.cerimonialista && !papeis.funcionario) {
         if (cadastroCerimonialistaPendente &&
@@ -188,8 +188,7 @@ class SessaoServico {
           // A criação de uma conta administrativa só pode ocorrer quando o
           // usuário iniciou explicitamente esse fluxo na tela de cadastro.
           await _garantirOrganizacaoComTentativas();
-          papeis =
-              await CasamentoAtualServico.instance.obterPapeisContaAtual();
+          papeis = await CasamentoAtualServico.instance.obterPapeisContaAtual();
           if (papeis.cerimonialista || papeis.funcionario) {
             await limparCadastroCerimonialistaPendente();
           }
@@ -269,9 +268,7 @@ class SessaoServico {
           'Conta ainda não ficou pronta após o login '
           '(tentativa $tentativa de 5): $erro',
         );
-        await Future<void>.delayed(
-          Duration(milliseconds: 600 * tentativa),
-        );
+        await Future<void>.delayed(Duration(milliseconds: 600 * tentativa));
       }
     }
 
@@ -349,9 +346,7 @@ class SessaoServico {
     }
   }
 
-  Future<void> habilitarPerfilCerimonialista({
-    required String nome,
-  }) async {
+  Future<void> habilitarPerfilCerimonialista({required String nome}) async {
     final usuario = _supabase.auth.currentUser;
     if (usuario == null || _supabase.auth.currentSession == null) {
       throw const AuthException(
@@ -500,12 +495,10 @@ class SessaoServico {
   }
 
   Future<void> limparPerfilCerimonialistaGooglePendente() async {
-    await (_banco.delete(_banco.configuracoesLocais)
-          ..where(
-            (tabela) => tabela.chave.equals(
-              _chavePerfilCerimonialistaGooglePendente,
-            ),
-          ))
+    await (_banco.delete(_banco.configuracoesLocais)..where(
+          (tabela) =>
+              tabela.chave.equals(_chavePerfilCerimonialistaGooglePendente),
+        ))
         .go();
   }
 
@@ -517,12 +510,9 @@ class SessaoServico {
   }
 
   Future<void> limparCadastroCerimonialistaPendente() async {
-    await (_banco.delete(_banco.configuracoesLocais)
-          ..where(
-            (tabela) => tabela.chave.equals(
-              _chaveCadastroCerimonialistaPendente,
-            ),
-          ))
+    await (_banco.delete(_banco.configuracoesLocais)..where(
+          (tabela) => tabela.chave.equals(_chaveCadastroCerimonialistaPendente),
+        ))
         .go();
   }
 
@@ -552,10 +542,12 @@ class SessaoServico {
 
     try {
       if (possuiSessaoDoConvite) {
-        final possuiGoogleVinculado = (_supabase.auth.currentUser?.identities ??
-                const <UserIdentity>[])
-            .any((identidade) =>
-                identidade.provider == OAuthProvider.google.name);
+        final possuiGoogleVinculado =
+            (_supabase.auth.currentUser?.identities ?? const <UserIdentity>[])
+                .any(
+                  (identidade) =>
+                      identidade.provider == OAuthProvider.google.name,
+                );
 
         if (possuiGoogleVinculado) {
           // O funcionário pode ter entrado diretamente com o Google antes de
@@ -626,7 +618,9 @@ class SessaoServico {
   Future<DadosConviteFuncionario> obterDadosConviteFuncionario() async {
     final token = ConviteFuncionarioLinkServico.instance.tokenPendente;
     if (token == null || token.isEmpty) {
-      throw const AuthException('O convite não está disponível neste aparelho.');
+      throw const AuthException(
+        'O convite não está disponível neste aparelho.',
+      );
     }
 
     final resposta = await _supabase.functions.invoke(
@@ -672,9 +666,7 @@ class SessaoServico {
 
       // O retorno do navegador e o evento signedIn podem chegar alguns
       // instantes antes de o SDK disponibilizar a sessão/token local.
-      await Future<void>.delayed(
-        Duration(milliseconds: 250 * (tentativa + 1)),
-      );
+      await Future<void>.delayed(Duration(milliseconds: 250 * (tentativa + 1)));
     }
 
     var resposta = await _supabase.functions.invoke(
@@ -682,8 +674,7 @@ class SessaoServico {
       body: {'token': token, 'acao': 'google'},
     );
     for (var tentativa = 0; tentativa < 3; tentativa++) {
-      final erroTemporario =
-          resposta.status == 409 || resposta.status >= 500;
+      final erroTemporario = resposta.status == 409 || resposta.status >= 500;
       if (!erroTemporario ||
           (resposta.status >= 200 && resposta.status < 300)) {
         break;
@@ -691,9 +682,7 @@ class SessaoServico {
 
       // A conta/identidade Google pode levar alguns instantes para ficar
       // visível para a Edge Function logo após o retorno do navegador.
-      await Future<void>.delayed(
-        Duration(milliseconds: 400 * (tentativa + 1)),
-      );
+      await Future<void>.delayed(Duration(milliseconds: 400 * (tentativa + 1)));
       resposta = await _supabase.functions.invoke(
         'concluir-convite-funcionario',
         body: {'token': token, 'acao': 'google'},
@@ -742,7 +731,9 @@ class SessaoServico {
   }) async {
     final token = ConviteFuncionarioLinkServico.instance.tokenPendente;
     if (token == null || token.isEmpty) {
-      throw const AuthException('O convite não está disponível neste aparelho.');
+      throw const AuthException(
+        'O convite não está disponível neste aparelho.',
+      );
     }
 
     final resposta = await _supabase.functions.invoke(
@@ -787,9 +778,7 @@ class SessaoServico {
 
   Future<void> limparVinculoGooglePendente() async {
     await (_banco.delete(_banco.configuracoesLocais)
-          ..where(
-            (tabela) => tabela.chave.equals(_chaveVinculoGooglePendente),
-          ))
+          ..where((tabela) => tabela.chave.equals(_chaveVinculoGooglePendente)))
         .go();
   }
 
@@ -804,15 +793,19 @@ class SessaoServico {
   }
 
   Future<void> limparLoginGooglePendente() async {
-    await (_banco.delete(_banco.configuracoesLocais)
-          ..where((tabela) => tabela.chave.equals(_chaveLoginGooglePendente)))
-        .go();
+    await (_banco.delete(
+      _banco.configuracoesLocais,
+    )..where((tabela) => tabela.chave.equals(_chaveLoginGooglePendente))).go();
   }
 
   /// Limpa somente a sessão Supabase deste aparelho antes de uma nova entrada.
   /// A conta Google continua salva no navegador/celular e aparecerá novamente
   /// no seletor de contas.
   Future<void> prepararNovaAutenticacao() async {
+    if (_usuarioAtual != null) {
+      await exigirSemAlteracoesPendentesParaTrocarSessao();
+    }
+
     await limparLoginGooglePendente();
     await limparVinculoGooglePendente();
     await limparPerfilCerimonialistaGooglePendente();
@@ -867,6 +860,7 @@ class SessaoServico {
   }
 
   Future<void> encerrarSessao() async {
+    await exigirSemAlteracoesPendentesParaTrocarSessao();
     await limparLoginGooglePendente();
     await limparVinculoGooglePendente();
     await limparPerfilCerimonialistaGooglePendente();
@@ -875,6 +869,15 @@ class SessaoServico {
     _usuarioAutenticado = null;
     await CasamentoAtualServico.instance.limparPersistido();
     await _supabase.auth.signOut(scope: SignOutScope.local);
+  }
+
+  /// Impede que alterações offline fiquem associadas à próxima conta que
+  /// entrar neste aparelho. As pendências são preservadas para que o usuário
+  /// atual possa sincronizá-las antes de sair.
+  Future<void> exigirSemAlteracoesPendentesParaTrocarSessao() async {
+    final quantidade =
+        (await _banco.select(_banco.operacoesPendentesLocais).get()).length;
+    validarTrocaSessaoSemPendencias(quantidade);
   }
 
   Future<void> _marcarLoginGooglePendente() {
@@ -886,9 +889,7 @@ class SessaoServico {
   }
 
   Future<void> _marcarPerfilCerimonialistaGooglePendente() {
-    return _salvarMarcadorPendente(
-      _chavePerfilCerimonialistaGooglePendente,
-    );
+    return _salvarMarcadorPendente(_chavePerfilCerimonialistaGooglePendente);
   }
 
   Future<void> _marcarCadastroCerimonialistaPendente() {
@@ -912,9 +913,10 @@ class SessaoServico {
   /// deste aparelho para que ele continue sendo reconhecido após um novo
   /// cadastro.
   Future<void> _limparTodosOsDadosLocais() async {
-    final dispositivo = await (_banco.select(
-      _banco.configuracoesLocais,
-    )..where((tabela) => tabela.chave.equals('dispositivo_id'))).getSingleOrNull();
+    final dispositivo =
+        await (_banco.select(_banco.configuracoesLocais)
+              ..where((tabela) => tabela.chave.equals('dispositivo_id')))
+            .getSingleOrNull();
 
     await _banco.transaction(() async {
       await _banco.delete(_banco.mensagensChatLocais).go();
@@ -930,11 +932,13 @@ class SessaoServico {
       if (dispositivo != null) {
         await _banco
             .into(_banco.configuracoesLocais)
-            .insert(ConfiguracoesLocaisCompanion.insert(
-              chave: dispositivo.chave,
-              valor: dispositivo.valor,
-              atualizadoEm: dispositivo.atualizadoEm,
-            ));
+            .insert(
+              ConfiguracoesLocaisCompanion.insert(
+                chave: dispositivo.chave,
+                valor: dispositivo.valor,
+                atualizadoEm: dispositivo.atualizadoEm,
+              ),
+            );
       }
     });
 
@@ -991,10 +995,7 @@ class SessaoServico {
   bool _erroIndicaContaRemovida(AuthException erro) {
     final codigo = erro.code?.toLowerCase() ?? '';
     final mensagem = erro.message.toLowerCase();
-    const codigos = {
-      'user_not_found',
-      'user_banned',
-    };
+    const codigos = {'user_not_found', 'user_banned'};
 
     return codigos.contains(codigo) ||
         mensagem.contains('user not found') ||
@@ -1013,9 +1014,9 @@ class SessaoServico {
 
     if (criadoEm == null ||
         DateTime.now().toUtc().difference(criadoEm) > validade) {
-      await (_banco.delete(_banco.configuracoesLocais)
-            ..where((tabela) => tabela.chave.equals(chave)))
-          .go();
+      await (_banco.delete(
+        _banco.configuracoesLocais,
+      )..where((tabela) => tabela.chave.equals(chave))).go();
       return false;
     }
     return true;
@@ -1030,10 +1031,7 @@ class SessaoServico {
 
     try {
       final usuarioAtualizado = (await _supabase.auth.getUser()).user;
-      return (
-        usuario: usuarioAtualizado ?? usuarioLocal,
-        validadoOnline: true,
-      );
+      return (usuario: usuarioAtualizado ?? usuarioLocal, validadoOnline: true);
     } on AuthException catch (erro) {
       if (_erroIndicaContaRemovida(erro)) {
         await _tratarContaRemovidaNoServidor();
@@ -1072,6 +1070,25 @@ class SessaoInvalidaException implements Exception {
 
   @override
   String toString() => mensagem;
+}
+
+class AlteracoesPendentesSessaoException implements Exception {
+  final int quantidade;
+
+  const AlteracoesPendentesSessaoException(this.quantidade);
+
+  String get mensagem => quantidade == 1
+      ? 'Existe 1 alteração offline pendente. Sincronize antes de sair ou trocar de conta.'
+      : 'Existem $quantidade alterações offline pendentes. Sincronize antes de sair ou trocar de conta.';
+
+  @override
+  String toString() => mensagem;
+}
+
+void validarTrocaSessaoSemPendencias(int quantidade) {
+  if (quantidade > 0) {
+    throw AlteracoesPendentesSessaoException(quantidade);
+  }
 }
 
 class ValidacaoSessaoIndisponivelException implements Exception {

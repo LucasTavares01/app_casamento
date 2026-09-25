@@ -253,7 +253,6 @@ class SupabaseServico {
         return Convidado(
           id: registro.id,
           nome: registro.nome,
-          email: registro.email,
           whatsapp: registro.whatsapp,
           mesaId: registro.mesaId,
           chegou: registro.chegou,
@@ -268,7 +267,6 @@ class SupabaseServico {
   Future<void> adicionarConvidado(
     String nome,
     String? mesaId, {
-    String? email,
     String? whatsapp,
   }) async {
     _exigirEdicao();
@@ -282,7 +280,6 @@ class SupabaseServico {
       'id': id,
       'casamento_id': _casamentoAtualId,
       'nome': nomeNormalizado,
-      'email': _normalizarTextoOpcional(email),
       'whatsapp': _normalizarTextoOpcional(whatsapp),
       'mesa_id': mesaId,
       'chegou': false,
@@ -300,7 +297,6 @@ class SupabaseServico {
             ConvidadosLocaisCompanion.insert(
               id: id,
               nome: nomeNormalizado,
-              email: Value(_normalizarTextoOpcional(email)),
               whatsapp: Value(_normalizarTextoOpcional(whatsapp)),
               mesaId: Value(mesaId),
               chegou: const Value(false),
@@ -328,7 +324,6 @@ class SupabaseServico {
     String id,
     String nome,
     String? mesaId, {
-    String? email,
     String? whatsapp,
   }) async {
     _exigirEdicao();
@@ -358,7 +353,6 @@ class SupabaseServico {
       'id': id,
       'casamento_id': _casamentoAtualId,
       'nome': nomeNormalizado,
-      'email': _normalizarTextoOpcional(email),
       'whatsapp': _normalizarTextoOpcional(whatsapp),
       'mesa_id': mesaId,
       'chegou': convidadoAtual.chegou,
@@ -383,7 +377,6 @@ class SupabaseServico {
       )..where((tabela) => tabela.id.equals(id))).write(
         ConvidadosLocaisCompanion(
           nome: Value(nomeNormalizado),
-          email: Value(_normalizarTextoOpcional(email)),
           whatsapp: Value(_normalizarTextoOpcional(whatsapp)),
           mesaId: Value(mesaId),
           atualizadoEm: Value(agora),
@@ -425,7 +418,6 @@ class SupabaseServico {
       'id': id,
       'casamento_id': _casamentoAtualId,
       'nome': convidadoAtual.nome,
-      'email': convidadoAtual.email,
       'whatsapp': convidadoAtual.whatsapp,
       'mesa_id': convidadoAtual.mesaId,
       'chegou': convidadoAtual.chegou,
@@ -518,6 +510,42 @@ class SupabaseServico {
               .map((registro) => Map<String, dynamic>.from(registro))
               .toList(),
         );
+  }
+
+  /// Observa a confirmação consolidada de cada convidado em tempo real.
+  ///
+  /// Esta tabela é separada do convite porque a confirmação manual não
+  /// precisa criar um link online para o convidado.
+  Stream<List<Map<String, dynamic>>> observarConfirmacoesConvidados() {
+    return _supabase
+        .from('confirmacoes_convidados')
+        .stream(primaryKey: ['id'])
+        .eq('casamento_id', _casamentoAtualId)
+        .map(
+          (dados) => dados
+              .map((registro) => Map<String, dynamic>.from(registro))
+              .toList(),
+        );
+  }
+
+  /// Marca ou remove a confirmação manual de um convidado.
+  ///
+  /// A resposta feita pelo próprio convidado continua sendo registrada como
+  /// origem `online`; esta operação só altera a origem para `manual`.
+  Future<void> marcarConfirmacaoConvidado({
+    required String convidadoId,
+    required bool confirmado,
+  }) async {
+    _exigirEdicao();
+
+    await _supabase.rpc(
+      'marcar_confirmacao_convidado_v1',
+      params: {
+        'p_casamento_id': _casamentoAtualId,
+        'p_convidado_id': convidadoId,
+        'p_status': confirmado ? 'confirmado' : 'aguardando',
+      },
+    );
   }
 
   // ============================================================

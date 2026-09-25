@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../modelos/modelos.dart';
 import '../servicos/casamento_atual_servico.dart';
+import '../servicos/recepcao_confirmacoes_servico.dart';
 import '../servicos/supabase_servico.dart';
 import 'tela_conflitos.dart';
 import 'tela_convites_online.dart';
@@ -79,6 +80,7 @@ class AbaRecepcao extends StatefulWidget {
 
 class _AbaRecepcaoState extends State<AbaRecepcao> {
   final SupabaseServico _servico = SupabaseServico();
+  late final RecepcaoConfirmacoesEstado _estadoConfirmacoes;
 
   late final _StreamComUltimoValor<List<Mesa>> _streamMesas;
   late final _StreamComUltimoValor<List<Convidado>> _streamConvidados;
@@ -114,6 +116,7 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
   void initState() {
     super.initState();
 
+    _estadoConfirmacoes = RecepcaoConfirmacoesEstado(_servico);
     _streamMesas = _StreamComUltimoValor(_servico.listarMesas());
     _streamConvidados = _StreamComUltimoValor(_servico.listarConvidados());
     _streamUsuarios = _StreamComUltimoValor(_servico.listarUsuariosApp());
@@ -136,6 +139,7 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
     unawaited(_streamEventos.dispose());
     unawaited(_streamConflitos.dispose());
     unawaited(_streamErrosSincronizacao.dispose());
+    unawaited(_estadoConfirmacoes.fechar());
     super.dispose();
   }
 
@@ -1157,7 +1161,7 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: Column(
         children: [
           SizedBox(
@@ -1175,8 +1179,14 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
                 Tab(
                   height: 58,
                   iconMargin: EdgeInsets.zero,
+                  icon: Icon(Icons.fact_check_outlined, size: 25),
+                  text: 'PRESENÇA',
+                ),
+                Tab(
+                  height: 58,
+                  iconMargin: EdgeInsets.zero,
                   icon: Icon(Icons.mail_outline, size: 25),
-                  text: 'CONVITES ONLINE',
+                  text: 'ONLINE',
                 ),
               ],
             ),
@@ -1185,7 +1195,16 @@ class _AbaRecepcaoState extends State<AbaRecepcao> {
             child: TabBarView(
               children: [
                 _conteudoRecepcao(),
-                const TelaConvitesOnline(mostrarAppBar: false),
+                TelaConvitesOnline(
+                  mostrarAppBar: false,
+                  estado: _estadoConfirmacoes,
+                  modo: ModoConvitesOnline.confirmacaoPresenca,
+                ),
+                TelaConvitesOnline(
+                  mostrarAppBar: false,
+                  estado: _estadoConfirmacoes,
+                  modo: ModoConvitesOnline.confirmacaoOnline,
+                ),
               ],
             ),
           ),

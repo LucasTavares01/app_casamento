@@ -22,7 +22,9 @@ class _TelaContaState extends State<TelaConta> {
   @override
   void initState() {
     super.initState();
-    _nome = TextEditingController(text: SessaoServico.instance.nomeExibicaoAtual);
+    _nome = TextEditingController(
+      text: SessaoServico.instance.nomeExibicaoAtual,
+    );
     _email = TextEditingController(text: SessaoServico.instance.emailAtual);
     _carregarPapeis();
   }
@@ -36,7 +38,8 @@ class _TelaContaState extends State<TelaConta> {
 
   Future<void> _carregarPapeis() async {
     try {
-      final papeis = await CasamentoAtualServico.instance.obterPapeisContaAtual();
+      final papeis = await CasamentoAtualServico.instance
+          .obterPapeisContaAtual();
       if (mounted) setState(() => _papeis = papeis);
     } catch (_) {
       if (mounted) setState(() => _papeis = null);
@@ -91,7 +94,12 @@ class _TelaContaState extends State<TelaConta> {
   }
 
   Future<void> _trocarConta(BuildContext context) async {
-    await SessaoServico.instance.encerrarSessao();
+    try {
+      await SessaoServico.instance.encerrarSessao();
+    } on AlteracoesPendentesSessaoException catch (erro) {
+      _mostrarMensagem(erro.mensagem);
+      return;
+    }
     if (!context.mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const TelaPortaDeEntrada()),
@@ -140,8 +148,8 @@ class _TelaContaState extends State<TelaConta> {
       builder: (dialogContext) {
         return StatefulBuilder(
           builder: (context, atualizarDialogo) {
-            final emailConfere = emailController.text.trim().toLowerCase() ==
-                emailAtual;
+            final emailConfere =
+                emailController.text.trim().toLowerCase() == emailAtual;
 
             return AlertDialog(
               title: const Text('Confirme sua identidade'),
@@ -258,8 +266,10 @@ class _TelaContaState extends State<TelaConta> {
               ),
             ),
             const SizedBox(height: 16),
-            const Text('Informações pessoais',
-                style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text(
+              'Informações pessoais',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
             const SizedBox(height: 8),
             Card(
               child: Padding(
@@ -292,7 +302,9 @@ class _TelaContaState extends State<TelaConta> {
                             ? const SizedBox(
                                 width: 16,
                                 height: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
                             : const Icon(Icons.save_outlined),
                         label: const Text('Salvar alterações'),
@@ -303,8 +315,10 @@ class _TelaContaState extends State<TelaConta> {
               ),
             ),
             const SizedBox(height: 16),
-            const Text('Perfis de acesso',
-                style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text(
+              'Perfis de acesso',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
             const SizedBox(height: 8),
             Card(
               child: Padding(
@@ -326,16 +340,15 @@ class _TelaContaState extends State<TelaConta> {
             const SizedBox(height: 16),
             const Text(
               'Zona de risco',
-              style: TextStyle(
-                color: Colors.red,
-                fontWeight: FontWeight.w700,
-              ),
+              style: TextStyle(color: Colors.red, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
             Card(
               child: ListTile(
-                leading: const Icon(Icons.delete_forever_outlined,
-                    color: Colors.red),
+                leading: const Icon(
+                  Icons.delete_forever_outlined,
+                  color: Colors.red,
+                ),
                 title: const Text('Excluir minha conta'),
                 subtitle: const Text(
                   'Apaga permanentemente a conta e todos os dados relacionados.',
@@ -422,8 +435,10 @@ class _TelaContaState extends State<TelaConta> {
               Row(
                 children: [
                   Expanded(
-                    child: Text(titulo,
-                        style: const TextStyle(fontWeight: FontWeight.w700)),
+                    child: Text(
+                      titulo,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
                   ),
                   Icon(
                     ativo ? Icons.check_circle : Icons.circle_outlined,

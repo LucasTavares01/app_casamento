@@ -62,11 +62,18 @@ Deno.serve(async (request) => {
     const solicitanteId = identidade.user.id;
     const { data: casamento, error: erroCasamento } = await admin
       .from("casamentos")
-      .select("organizacao_id")
+      .select("organizacao_id, status")
       .eq("id", casamentoId)
       .maybeSingle();
     if (erroCasamento || !casamento) {
       return jsonResponse({ mensagem: "Evento não encontrado." }, 404);
+    }
+
+    if (["finalizado", "arquivado"].includes(String(casamento.status))) {
+      return jsonResponse(
+        { mensagem: "Não é possível publicar uma lista em evento finalizado ou arquivado." },
+        409,
+      );
     }
 
     const [{ data: adminOrganizacao }, { data: adminCasamento }] = await Promise.all([

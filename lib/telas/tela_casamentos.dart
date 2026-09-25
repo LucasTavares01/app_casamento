@@ -478,7 +478,12 @@ class _TelaCasamentosState extends State<TelaCasamentos>
   }
 
   Future<void> _sair() async {
-    await SessaoServico.instance.encerrarSessao();
+    try {
+      await SessaoServico.instance.encerrarSessao();
+    } on AlteracoesPendentesSessaoException catch (erro) {
+      _mostrarErro(erro.mensagem);
+      return;
+    }
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const TelaPortaDeEntrada()),
@@ -494,180 +499,184 @@ class _TelaCasamentosState extends State<TelaCasamentos>
         if (!didPop) unawaited(_confirmarSaidaDoAplicativo());
       },
       child: Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Meus eventos'),
-            Text(
-              _modoPerfil == _ModoPerfil.cerimonialista
-                  ? 'Cerimonialista'
-                  : 'Funcionário',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: Theme.of(context).colorScheme.onPrimaryContainer,
-                fontWeight: FontWeight.w500,
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          title: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Meus eventos'),
+              Text(
+                _modoPerfil == _ModoPerfil.cerimonialista
+                    ? 'Cerimonialista'
+                    : 'Funcionário',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onPrimaryContainer,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
+            ],
+          ),
+          actions: [
+            IconButton(
+              tooltip: _mostrarPesquisa
+                  ? 'Fechar pesquisa'
+                  : 'Pesquisar eventos',
+              onPressed: _mostrarPesquisa ? _fecharPesquisa : _abrirPesquisa,
+              icon: Icon(_mostrarPesquisa ? Icons.close : Icons.search),
+            ),
+            IconButton(
+              tooltip: 'Configurações da conta',
+              onPressed: () async {
+                await Navigator.of(
+                  context,
+                ).push(MaterialPageRoute(builder: (_) => const TelaConta()));
+                if (mounted) await _carregarPermissao();
+              },
+              icon: const Icon(Icons.settings_outlined),
+            ),
+            IconButton(
+              tooltip: 'Atualizar',
+              onPressed: _recarregar,
+              icon: const Icon(Icons.refresh),
+            ),
+            IconButton(
+              tooltip: 'Sair',
+              onPressed: _sair,
+              icon: const Icon(Icons.logout),
             ),
           ],
         ),
-        actions: [
-          IconButton(
-            tooltip: _mostrarPesquisa ? 'Fechar pesquisa' : 'Pesquisar eventos',
-            onPressed: _mostrarPesquisa ? _fecharPesquisa : _abrirPesquisa,
-            icon: Icon(_mostrarPesquisa ? Icons.close : Icons.search),
-          ),
-          IconButton(
-            tooltip: 'Configurações da conta',
-            onPressed: () async {
-              await Navigator.of(
-                context,
-              ).push(MaterialPageRoute(builder: (_) => const TelaConta()));
-              if (mounted) await _carregarPermissao();
-            },
-            icon: const Icon(Icons.settings_outlined),
-          ),
-          IconButton(
-            tooltip: 'Atualizar',
-            onPressed: _recarregar,
-            icon: const Icon(Icons.refresh),
-          ),
-          IconButton(
-            tooltip: 'Sair',
-            onPressed: _sair,
-            icon: const Icon(Icons.logout),
-          ),
-        ],
-      ),
-      floatingActionButton: StreamBuilder<List<CasamentoAtual>>(
-        stream: _casamentosEmTempoReal,
-        builder: (context, snapshot) {
-          if (!_podeCriarCasamentos ||
-              _modoPerfil != _ModoPerfil.cerimonialista ||
-              _abaSelecionada != 0) {
-            return const SizedBox.shrink();
-          }
+        floatingActionButton: StreamBuilder<List<CasamentoAtual>>(
+          stream: _casamentosEmTempoReal,
+          builder: (context, snapshot) {
+            if (!_podeCriarCasamentos ||
+                _modoPerfil != _ModoPerfil.cerimonialista ||
+                _abaSelecionada != 0) {
+              return const SizedBox.shrink();
+            }
 
-          return FloatingActionButton.extended(
-            onPressed: _novoCasamento,
-            icon: const Icon(Icons.add),
-            label: const Text('Novo evento'),
-          );
-        },
-      ),
-      body: StreamBuilder<List<CasamentoAtual>>(
-        stream: _casamentosEmTempoReal,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState != ConnectionState.waiting &&
-              snapshot.hasError) {
-            return _EstadoErro(onTentarNovamente: _recarregar);
-          }
+            return FloatingActionButton.extended(
+              onPressed: _novoCasamento,
+              icon: const Icon(Icons.add),
+              label: const Text('Novo evento'),
+            );
+          },
+        ),
+        body: StreamBuilder<List<CasamentoAtual>>(
+          stream: _casamentosEmTempoReal,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.waiting &&
+                snapshot.hasError) {
+              return _EstadoErro(onTentarNovamente: _recarregar);
+            }
 
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
+            if (!snapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
 
-          final todos = snapshot.data!
-              .where(
-                (casamento) => _modoPerfil == _ModoPerfil.cerimonialista
-                    ? casamento.ehAdmin
-                    : !casamento.ehAdmin,
-              )
-              .toList();
-          final ativos = todos
-              .where((casamento) => !_estaFinalizadoNaVisao(casamento))
-              .toList();
-          final finalizados = todos
-              .where((casamento) => _estaFinalizadoNaVisao(casamento))
-              .toList();
+            final todos = snapshot.data!
+                .where(
+                  (casamento) => _modoPerfil == _ModoPerfil.cerimonialista
+                      ? casamento.ehAdmin
+                      : !casamento.ehAdmin,
+                )
+                .toList();
+            final ativos = todos
+                .where((casamento) => !_estaFinalizadoNaVisao(casamento))
+                .toList();
+            final finalizados = todos
+                .where((casamento) => _estaFinalizadoNaVisao(casamento))
+                .toList();
 
-          final listaAtual = _abaSelecionada == 0 ? ativos : finalizados;
-          final filtrados = _filtrarCasamentos(listaAtual);
+            final listaAtual = _abaSelecionada == 0 ? ativos : finalizados;
+            final filtrados = _filtrarCasamentos(listaAtual);
 
-          return Column(
-            children: [
-              if (_papeis.funcionario && _papeis.cerimonialista)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                  child: _construirSeletorPerfis(),
-                ),
-              if (_mostrarPesquisa)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                  child: TextField(
-                    controller: _pesquisa,
-                    focusNode: _focoPesquisa,
-                    textInputAction: TextInputAction.search,
-                    decoration: InputDecoration(
-                      hintText: 'Pesquisar evento',
-                      prefixIcon: const Icon(Icons.search),
-                      suffixIcon: _pesquisa.text.isEmpty
-                          ? null
-                          : IconButton(
-                              tooltip: 'Limpar pesquisa',
-                              onPressed: _pesquisa.clear,
-                              icon: const Icon(Icons.close),
-                            ),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(16),
+            return Column(
+              children: [
+                if (_papeis.funcionario && _papeis.cerimonialista)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                    child: _construirSeletorPerfis(),
+                  ),
+                if (_mostrarPesquisa)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                    child: TextField(
+                      controller: _pesquisa,
+                      focusNode: _focoPesquisa,
+                      textInputAction: TextInputAction.search,
+                      decoration: InputDecoration(
+                        hintText: 'Pesquisar evento',
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: _pesquisa.text.isEmpty
+                            ? null
+                            : IconButton(
+                                tooltip: 'Limpar pesquisa',
+                                onPressed: _pesquisa.clear,
+                                icon: const Icon(Icons.close),
+                              ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
                     ),
                   ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: TabBar(
+                    controller: _abasController,
+                    indicatorSize: TabBarIndicatorSize.tab,
+                    indicatorWeight: 3,
+                    tabs: [
+                      Tab(text: 'Meus eventos (${ativos.length})'),
+                      Tab(text: 'Finalizados (${finalizados.length})'),
+                    ],
+                  ),
                 ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: TabBar(
-                  controller: _abasController,
-                  indicatorSize: TabBarIndicatorSize.tab,
-                  indicatorWeight: 3,
-                  tabs: [
-                    Tab(text: 'Meus eventos (${ativos.length})'),
-                    Tab(text: 'Finalizados (${finalizados.length})'),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 6),
-              Expanded(
-                child: filtrados.isEmpty
-                    ? _EstadoListaVazia(
-                        pesquisando: _pesquisa.text.trim().isNotEmpty,
-                        finalizados: _abaSelecionada == 1,
-                        temEventos: todos.isNotEmpty,
-                        podeCriar:
-                            _podeCriarCasamentos &&
-                            _modoPerfil == _ModoPerfil.cerimonialista,
-                        onCriar: _novoCasamento,
-                      )
-                    : RefreshIndicator(
-                        onRefresh: () async => _recarregar(),
-                        child: ListView.separated(
-                          padding: const EdgeInsets.fromLTRB(16, 10, 16, 100),
-                          itemCount: filtrados.length,
-                          separatorBuilder: (_, _) =>
-                              const SizedBox(height: 12),
-                          itemBuilder: (context, index) => _CardCasamento(
-                            casamento: filtrados[index],
-                            processando:
-                                _casamentoProcessandoId == filtrados[index].id,
-                            finalizadoNaLista: _estaFinalizadoNaVisao(
-                              filtrados[index],
+                const SizedBox(height: 6),
+                Expanded(
+                  child: filtrados.isEmpty
+                      ? _EstadoListaVazia(
+                          pesquisando: _pesquisa.text.trim().isNotEmpty,
+                          finalizados: _abaSelecionada == 1,
+                          temEventos: todos.isNotEmpty,
+                          podeCriar:
+                              _podeCriarCasamentos &&
+                              _modoPerfil == _ModoPerfil.cerimonialista,
+                          onCriar: _novoCasamento,
+                        )
+                      : RefreshIndicator(
+                          onRefresh: () async => _recarregar(),
+                          child: ListView.separated(
+                            padding: const EdgeInsets.fromLTRB(16, 10, 16, 100),
+                            itemCount: filtrados.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: 12),
+                            itemBuilder: (context, index) => _CardCasamento(
+                              casamento: filtrados[index],
+                              processando:
+                                  _casamentoProcessandoId ==
+                                  filtrados[index].id,
+                              finalizadoNaLista: _estaFinalizadoNaVisao(
+                                filtrados[index],
+                              ),
+                              acaoEmAndamento: _acaoEmAndamento,
+                              onAbrir: () => _abrir(filtrados[index]),
+                              onEditar: () =>
+                                  _editarCasamento(filtrados[index]),
+                              onEncerrar: () => _finalizar(filtrados[index]),
+                              onRelatorio: () =>
+                                  _gerarRelatorio(filtrados[index]),
+                              onExcluir: () => _excluir(filtrados[index]),
                             ),
-                            acaoEmAndamento: _acaoEmAndamento,
-                            onAbrir: () => _abrir(filtrados[index]),
-                            onEditar: () => _editarCasamento(filtrados[index]),
-                            onEncerrar: () => _finalizar(filtrados[index]),
-                            onRelatorio: () =>
-                                _gerarRelatorio(filtrados[index]),
-                            onExcluir: () => _excluir(filtrados[index]),
                           ),
                         ),
-                      ),
-              ),
-            ],
-          );
-        },
-      ),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -1422,7 +1431,9 @@ class _DialogNovoCasamentoState extends State<_DialogNovoCasamento> {
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
-                    onPressed: _salvando ? null : _selecionarDataLimiteConfirmacao,
+                    onPressed: _salvando
+                        ? null
+                        : _selecionarDataLimiteConfirmacao,
                     icon: const Icon(Icons.event_available_outlined),
                     label: Text(
                       _dataLimiteConfirmacao == null

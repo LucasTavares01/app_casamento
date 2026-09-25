@@ -1,6 +1,8 @@
 package com.example.app_casamento
 
+import android.Manifest
 import android.content.ContentValues
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -13,7 +15,17 @@ import java.io.FileOutputStream
 class MainActivity : FlutterActivity() {
     companion object {
         private const val CANAL_ARQUIVOS = "br.com.appcasamento/arquivos"
+        private const val CODIGO_PERMISSAO_DOWNLOADS = 4101
     }
+
+    private data class SolicitaçãoDownload(
+        val nomeArquivo: String,
+        val mimeType: String,
+        val bytes: ByteArray
+    )
+
+    private var downloadPendente: SolicitaçãoDownload? = null
+    private var resultadoDownloadPendente: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -40,33 +52,89 @@ class MainActivity : FlutterActivity() {
                 return@setMethodCallHandler
             }
 
-            Thread {
-                try {
-                    val localSalvo = salvarEmDownloads(
-                        nomeArquivo = nomeArquivo,
-                        mimeType = mimeType,
-                        bytes = bytes
+            val solicitacao = SolicitaçãoDownload(nomeArquivo, mimeType, bytes)
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+                checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+                    PackageManager.PERMISSION_GRANTED
+            ) {
+                if (resultadoDownloadPendente != null) {
+                    resultado.error(
+                        "DOWNLOAD_EM_ANDAMENTO",
+                        "Já existe um pedido de permissão para salvar um arquivo.",
+                        null
                     )
-
-                    runOnUiThread {
-                        resultado.success(
-                            mapOf(
-                                "nomeArquivo" to nomeArquivo,
-                                "local" to localSalvo
-                            )
-                        )
-                    }
-                } catch (erro: Exception) {
-                    runOnUiThread {
-                        resultado.error(
-                            "ERRO_AO_SALVAR_DOWNLOADS",
-                            erro.message ?: "Não foi possível salvar o arquivo em Downloads.",
-                            null
-                        )
-                    }
+                    return@setMethodCallHandler
                 }
-            }.start()
+
+                downloadPendente = solicitacao
+                resultadoDownloadPendente = resultado
+                requestPermissions(
+                    arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                    CODIGO_PERMISSAO_DOWNLOADS
+                )
+                return@setMethodCallHandler
+            }
+
+            executarSalvamento(solicitacao, resultado)
         }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != CODIGO_PERMISSAO_DOWNLOADS) return
+
+        val solicitacao = downloadPendente
+        val resultado = resultadoDownloadPendente
+        downloadPendente = null
+        resultadoDownloadPendente = null
+
+        if (solicitacao == null || resultado == null) return
+
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            executarSalvamento(solicitacao, resultado)
+        } else {
+            resultado.error(
+                "PERMISSAO_DOWNLOADS_NEGADA",
+                "Permita o acesso à pasta Downloads para salvar o relatório.",
+                null
+            )
+        }
+    }
+
+    private fun executarSalvamento(
+        solicitacao: SolicitaçãoDownload,
+        resultado: MethodChannel.Result
+    ) {
+        Thread {
+            try {
+                val localSalvo = salvarEmDownloads(
+                    nomeArquivo = solicitacao.nomeArquivo,
+                    mimeType = solicitacao.mimeType,
+                    bytes = solicitacao.bytes
+                )
+
+                runOnUiThread {
+                    resultado.success(
+                        mapOf(
+                            "nomeArquivo" to solicitacao.nomeArquivo,
+                            "local" to localSalvo
+                        )
+                    )
+                }
+            } catch (erro: Exception) {
+                runOnUiThread {
+                    resultado.error(
+                        "ERRO_AO_SALVAR_DOWNLOADS",
+                        erro.message ?: "Não foi possível salvar o arquivo em Downloads.",
+                        null
+                    )
+                }
+            }
+        }.start()
     }
 
     private fun salvarEmDownloads(

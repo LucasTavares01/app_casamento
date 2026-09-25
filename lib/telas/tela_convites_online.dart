@@ -6,12 +6,36 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../modelos/modelos.dart';
 import '../servicos/casamento_atual_servico.dart';
+import '../servicos/recepcao_confirmacoes_servico.dart';
 import '../servicos/supabase_servico.dart';
+
+enum ModoConvitesOnline { confirmacaoPresenca, confirmacaoOnline }
+
+String? normalizarTelefoneWhatsApp(String? valor) {
+  final digitos = (valor ?? '').replaceAll(RegExp(r'\D'), '');
+  if (digitos.isEmpty) return null;
+
+  final comCodigo = switch (digitos.length) {
+    10 || 11 => '55$digitos',
+    12 || 13 when digitos.startsWith('55') => digitos,
+    _ => null,
+  };
+
+  if (comCodigo == null) return null;
+  return comCodigo;
+}
 
 class TelaConvitesOnline extends StatefulWidget {
   final bool mostrarAppBar;
+  final ModoConvitesOnline modo;
+  final RecepcaoConfirmacoesEstado estado;
 
-  const TelaConvitesOnline({super.key, this.mostrarAppBar = true});
+  const TelaConvitesOnline({
+    super.key,
+    this.mostrarAppBar = true,
+    this.modo = ModoConvitesOnline.confirmacaoOnline,
+    required this.estado,
+  });
 
   @override
   State<TelaConvitesOnline> createState() => _TelaConvitesOnlineState();
@@ -26,7 +50,7 @@ class _ItemFilaConvite {
 
 class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
   final SupabaseServico _servico = SupabaseServico();
-  late final Stream<List<Map<String, dynamic>>> _convitesStream;
+  late final Stream<RecepcaoConfirmacoesSnapshot> _estadoStream;
 
   String _busca = '';
   String _filtroStatus = 'todos';
@@ -47,10 +71,13 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
       CasamentoAtualServico.instance.ehAdmin &&
       !CasamentoAtualServico.instance.somenteLeitura;
 
+  bool get _somenteConfirmacaoOnline =>
+      widget.modo == ModoConvitesOnline.confirmacaoOnline;
+
   @override
   void initState() {
     super.initState();
-    _convitesStream = _servico.observarConvitesOnline();
+    _estadoStream = widget.estado.estadoStream;
   }
 
   void _atualizar() {
@@ -59,12 +86,7 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
   }
 
   String? _normalizarTelefone(String? valor) {
-    final digitos = (valor ?? '').replaceAll(RegExp(r'\D'), '');
-    if (digitos.isEmpty) return null;
-
-    final comCodigo = digitos.startsWith('55') ? digitos : '55$digitos';
-    if (comCodigo.length != 12 && comCodigo.length != 13) return null;
-    return comCodigo;
+    return normalizarTelefoneWhatsApp(valor);
   }
 
   List<String> _canaisEnviados(Map<String, dynamic>? convite) {
@@ -136,7 +158,7 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
         return AlertDialog(
           title: const Text('Reenviar convite?'),
           content: Text(
-            '${convidado.nome} já respondeu: ${_status(convite)}. '
+            '${convidado.nome} já respondeu: ${_status(convite, null)}. '
             'Deseja gerar um novo link e reenviar por $canal?',
           ),
           actions: [
@@ -297,7 +319,8 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
   String _textoConvite(Convidado convidado, String link) {
     final evento =
         CasamentoAtualServico.instance.casamento?.titulo ?? 'seu evento';
-    final prazo = CasamentoAtualServico.instance.casamento?.dataLimiteConfirmacao;
+    final prazo =
+        CasamentoAtualServico.instance.casamento?.dataLimiteConfirmacao;
     final prazoTexto = prazo == null
         ? ''
         : '\n\nConfirme sua presença até ${_formatarData(prazo)}.';
@@ -321,7 +344,11 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
     if (!_podeEnviarConvites || _processandoEnvio) return;
 
     final reenvio = !daFila && !_podeEnviar(convite)
-        ? await _confirmarReenvio(convidado, canal: 'WhatsApp', convite: convite)
+        ? await _confirmarReenvio(
+            convidado,
+            canal: 'WhatsApp',
+            convite: convite,
+          )
         : false;
     if (!daFila && !_podeEnviar(convite) && !reenvio) return;
 
@@ -369,9 +396,7 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
               ),
               FilledButton(
                 onPressed: () => Navigator.pop(dialogContext, true),
-                child: Text(
-                  daFila ? 'Sim, enviei' : 'Marcar como enviado',
-                ),
+                child: Text(daFila ? 'Sim, enviei' : 'Marcar como enviado'),
               ),
             ],
           );
@@ -405,8 +430,62 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
     }
   }
 
-  String _status(Map<String, dynamic>? convite) {
-    switch (convite?['status']?.toString()) {
+  String? _statusConsolidado(
+    Map<String, dynamic>? convite,
+    Map<String, dynamic>? confirmacao,
+  ) {
+    final statusConfirmacao = confirmacao?['status']?.toString();
+    if (statusConfirmacao != null && statusConfirmacao != 'aguardando') {
+      return statusConfirmacao;
+    }
+    return convite?['status']?.toString();
+  }
+
+  bool _estaConfirmado(
+    Map<String, dynamic>? convite,
+    Map<String, dynamic>? confirmacao,
+  ) {
+    return _statusConsolidado(convite, confirmacao) == 'confirmado';
+  }
+
+  bool _estaAguardandoConfirmacao(
+    Map<String, dynamic>? convite,
+    Map<String, dynamic>? confirmacao,
+  ) {
+    final status = _statusConsolidado(convite, confirmacao);
+    return status != 'confirmado' && status != 'recusado';
+  }
+
+  bool _estaAtrasado(
+    DateTime? prazo,
+    Map<String, dynamic>? convite,
+    Map<String, dynamic>? confirmacao,
+  ) {
+    if (prazo == null || !_estaAguardandoConfirmacao(convite, confirmacao)) {
+      return false;
+    }
+
+    final hoje = DateTime.now();
+    final dataHoje = DateTime(hoje.year, hoje.month, hoje.day);
+    final dataPrazo = DateTime(prazo.year, prazo.month, prazo.day);
+    return dataHoje.isAfter(dataPrazo);
+  }
+
+  bool _foiConfirmadoPeloConvidado(
+    Map<String, dynamic>? convite,
+    Map<String, dynamic>? confirmacao,
+  ) {
+    return _estaConfirmado(convite, confirmacao) &&
+        confirmacao?['origem']?.toString() != 'manual' &&
+        (confirmacao?['origem']?.toString() == 'online' ||
+            convite?['status']?.toString() == 'confirmado');
+  }
+
+  String _status(
+    Map<String, dynamic>? convite,
+    Map<String, dynamic>? confirmacao,
+  ) {
+    switch (_statusConsolidado(convite, confirmacao)) {
       case 'enviado':
         return 'Enviado';
       case 'aberto':
@@ -420,8 +499,11 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
     }
   }
 
-  IconData _iconeStatus(Map<String, dynamic>? convite) {
-    switch (convite?['status']?.toString()) {
+  IconData _iconeStatus(
+    Map<String, dynamic>? convite,
+    Map<String, dynamic>? confirmacao,
+  ) {
+    switch (_statusConsolidado(convite, confirmacao)) {
       case 'confirmado':
         return Icons.check_circle;
       case 'recusado':
@@ -434,8 +516,11 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
     }
   }
 
-  Color _corStatus(Map<String, dynamic>? convite) {
-    switch (convite?['status']?.toString()) {
+  Color _corStatus(
+    Map<String, dynamic>? convite,
+    Map<String, dynamic>? confirmacao,
+  ) {
+    switch (_statusConsolidado(convite, confirmacao)) {
       case 'confirmado':
         return Colors.green.shade700;
       case 'recusado':
@@ -448,8 +533,11 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
     }
   }
 
-  String _chaveStatus(Map<String, dynamic>? convite) {
-    switch (convite?['status']?.toString()) {
+  String _chaveStatus(
+    Map<String, dynamic>? convite,
+    Map<String, dynamic>? confirmacao,
+  ) {
+    switch (_statusConsolidado(convite, confirmacao)) {
       case 'enviado':
         return 'enviado';
       case 'aberto':
@@ -460,6 +548,43 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
         return 'recusado';
       default:
         return 'pendente';
+    }
+  }
+
+  Future<void> _alternarConfirmacaoManual(
+    Convidado convidado,
+    Map<String, dynamic>? convite,
+    Map<String, dynamic>? confirmacao,
+  ) async {
+    if (!_podeEnviarConvites || _processandoEnvio) return;
+
+    final status = _statusConsolidado(convite, confirmacao);
+    final origem = confirmacao?['origem']?.toString();
+    final confirmadaOnline =
+        status == 'confirmado' &&
+        (origem == 'online' || convite?['status']?.toString() == 'confirmado');
+
+    if (confirmadaOnline && origem != 'manual') {
+      _mostrarMensagem(
+        'Esta presença foi confirmada pelo próprio convidado no link.',
+      );
+      return;
+    }
+
+    final confirmar = status != 'confirmado';
+
+    try {
+      await widget.estado.marcarConfirmacaoManual(
+        convidadoId: convidado.id,
+        confirmado: confirmar,
+      );
+      _mostrarMensagem(
+        confirmar
+            ? '${convidado.nome} foi marcado como confirmado.'
+            : 'A confirmação manual de ${convidado.nome} foi removida.',
+      );
+    } catch (erro) {
+      _mostrarMensagem('Não foi possível atualizar a confirmação: $erro');
     }
   }
 
@@ -525,7 +650,11 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
     return Scaffold(
       appBar: widget.mostrarAppBar
           ? AppBar(
-              title: const Text('Convites online'),
+              title: Text(
+                _somenteConfirmacaoOnline
+                    ? 'Confirmação online'
+                    : 'Confirmação de presença',
+              ),
               actions: [
                 IconButton(
                   tooltip: 'Atualizar',
@@ -535,242 +664,351 @@ class _TelaConvitesOnlineState extends State<TelaConvitesOnline> {
               ],
             )
           : null,
-      body: StreamBuilder<List<Convidado>>(
-        stream: _servico.listarConvidados(),
-        builder: (context, convidadosSnapshot) {
-          if (convidadosSnapshot.hasError) {
-            return const Center(
-              child: Text('Não foi possível carregar convidados.'),
+      body: StreamBuilder<RecepcaoConfirmacoesSnapshot>(
+        stream: _estadoStream,
+        initialData: widget.estado.ultimoEstado,
+        builder: (context, estadoSnapshot) {
+          if (estadoSnapshot.hasError ||
+              (estadoSnapshot.data == null &&
+                  widget.estado.mensagemErro != null)) {
+            return Center(
+              child: Text(
+                widget.estado.mensagemErro ??
+                    'Não foi possível carregar os dados online.',
+                textAlign: TextAlign.center,
+              ),
             );
           }
-          if (!convidadosSnapshot.hasData) {
+          if (!estadoSnapshot.hasData) {
             return const Center(child: CircularProgressIndicator());
           }
 
-          final convidadosTodos =
-              convidadosSnapshot.data!
-                  .toList()
-                ..sort(
-                  (a, b) =>
-                      a.nome.toLowerCase().compareTo(b.nome.toLowerCase()),
-                );
+          final estado = estadoSnapshot.data!;
+          final convidadosTodos = estado.convidados.toList()
+            ..sort(
+              (a, b) => a.nome.toLowerCase().compareTo(b.nome.toLowerCase()),
+            );
+          final convites = <String, Map<String, dynamic>>{
+            for (final convite in estado.convites)
+              convite['convidado_id'].toString(): convite,
+          };
+          final confirmacoes = <String, Map<String, dynamic>>{
+            for (final confirmacao in estado.confirmacoes)
+              confirmacao['convidado_id'].toString(): confirmacao,
+          };
 
-          return StreamBuilder<List<Map<String, dynamic>>>(
-            stream: _convitesStream,
-            builder: (context, convitesSnapshot) {
-              final convites = <String, Map<String, dynamic>>{
-                for (final convite in convitesSnapshot.data ?? const [])
-                  convite['convidado_id'].toString(): convite,
-              };
+          final dataLimite =
+              CasamentoAtualServico.instance.casamento?.dataLimiteConfirmacao;
 
-              final convidados = convidadosTodos
-                  .where(
-                    (convidado) =>
-                        convidado.nome.toLowerCase().contains(_busca) &&
-                        (_filtroStatus == 'todos' ||
-                            _chaveStatus(convites[convidado.id]) ==
-                                _filtroStatus),
-                  )
-                  .toList(growable: false);
+          final convidados = convidadosTodos
+              .where(
+                (convidado) =>
+                    convidado.nome.toLowerCase().contains(_busca) &&
+                    (!_somenteConfirmacaoOnline ||
+                        (_normalizarTelefone(convidado.whatsapp) != null &&
+                            !_estaConfirmado(
+                              convites[convidado.id],
+                              confirmacoes[convidado.id],
+                            ))) &&
+                    (_filtroStatus == 'todos' ||
+                        _chaveStatus(
+                              convites[convidado.id],
+                              confirmacoes[convidado.id],
+                            ) ==
+                            _filtroStatus),
+              )
+              .toList();
 
-              final filaPendente = _podeEnviarConvites
-                  ? _montarFilaWhatsApp(convidadosTodos, convites)
-                  : Future.value(const <_ItemFilaConvite>[]);
+          convidados.sort((a, b) {
+            final atrasoA = _estaAtrasado(
+              dataLimite,
+              convites[a.id],
+              confirmacoes[a.id],
+            );
+            final atrasoB = _estaAtrasado(
+              dataLimite,
+              convites[b.id],
+              confirmacoes[b.id],
+            );
 
-              return Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 12, 4),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            decoration: const InputDecoration(
-                              isDense: true,
-                              labelText: 'Buscar convidado',
-                              prefixIcon: Icon(Icons.search),
-                              border: OutlineInputBorder(),
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 10,
-                              ),
-                            ),
-                            onChanged: (valor) {
-                              setState(
-                                () => _busca = valor.trim().toLowerCase(),
-                              );
-                            },
+            if (atrasoA != atrasoB) {
+              return atrasoA ? -1 : 1;
+            }
+
+            return a.nome.toLowerCase().compareTo(b.nome.toLowerCase());
+          });
+
+          final filaPendente = _somenteConfirmacaoOnline && _podeEnviarConvites
+              ? _montarFilaWhatsApp(convidados, convites)
+              : Future.value(const <_ItemFilaConvite>[]);
+
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 12, 4),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Buscar convidado',
+                          prefixIcon: Icon(Icons.search),
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
                           ),
                         ),
-                        const SizedBox(width: 2),
-                        IconButton(
-                          tooltip: 'Filtrar por status',
-                          onPressed: _selecionarFiltroStatus,
-                          icon: Icon(
-                            Icons.filter_list,
-                            color: _filtroStatus == 'todos'
-                                ? null
-                                : Theme.of(context).colorScheme.primary,
-                          ),
-                        ),
-                      ],
+                        onChanged: (valor) {
+                          setState(() => _busca = valor.trim().toLowerCase());
+                        },
+                      ),
                     ),
+                    const SizedBox(width: 2),
+                    IconButton(
+                      tooltip: 'Filtrar por status',
+                      onPressed: _selecionarFiltroStatus,
+                      icon: Icon(
+                        Icons.filter_list,
+                        color: _filtroStatus == 'todos'
+                            ? null
+                            : Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (!_podeEnviarConvites)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
+                  child: Text(
+                    'Somente leitura: acompanhe o status dos convites.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                    textAlign: TextAlign.center,
                   ),
-                  if (!_podeEnviarConvites)
-                    Padding(
+                )
+              else if (_somenteConfirmacaoOnline)
+                FutureBuilder<List<_ItemFilaConvite>>(
+                  future: filaPendente,
+                  builder: (context, filaSnapshot) {
+                    final quantidade = filaSnapshot.data?.length ?? 0;
+                    final textoBotao = _filaAtiva
+                        ? _aguardandoContinuar
+                              ? 'Preparar WhatsApp (${_indiceFila + 1}/${_fila.length})'
+                              : 'Parar envio (${_indiceFila + 1}/${_fila.length})'
+                        : 'Iniciar WhatsApps ($quantidade)';
+
+                    return Padding(
                       padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
-                      child: Text(
-                        'Somente leitura: acompanhe o status dos convites.',
-                        style: Theme.of(context).textTheme.bodySmall,
-                        textAlign: TextAlign.center,
-                      ),
-                    )
-                  else
-                    FutureBuilder<List<_ItemFilaConvite>>(
-                      future: filaPendente,
-                      builder: (context, filaSnapshot) {
-                        final quantidade = filaSnapshot.data?.length ?? 0;
-                        final textoBotao = _filaAtiva
-                            ? _aguardandoContinuar
-                                  ? 'Preparar WhatsApp (${_indiceFila + 1}/${_fila.length})'
-                                  : 'Parar envio (${_indiceFila + 1}/${_fila.length})'
-                            : 'Iniciar WhatsApps ($quantidade)';
-
-                        return Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
-                          child: SizedBox(
-                            width: double.infinity,
-                            child: FilledButton.icon(
-                              onPressed: _processandoEnvio
-                                  ? null
-                                  : _filaAtiva
-                                  ? (_aguardandoContinuar
-                                        ? _continuarFila
-                                        : _pararFila)
-                                  : () => _iniciarFila(convidados, convites),
-                              icon: Icon(
-                                _filaAtiva && !_aguardandoContinuar
-                                    ? Icons.stop_circle_outlined
-                                    : Icons.send,
-                              ),
-                              label: Text(textoBotao),
-                            ),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: _processandoEnvio
+                              ? null
+                              : _filaAtiva
+                              ? (_aguardandoContinuar
+                                    ? _continuarFila
+                                    : _pararFila)
+                              : () => _iniciarFila(convidados, convites),
+                          icon: Icon(
+                            _filaAtiva && !_aguardandoContinuar
+                                ? Icons.stop_circle_outlined
+                                : Icons.send,
                           ),
-                        );
-                      },
-                    ),
-                  if (_filaAtiva && _podeEnviarConvites)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
-                      child: Text(
-                        'Cada WhatsApp é aberto individualmente para você tocar em Enviar.',
-                        style: Theme.of(context).textTheme.bodySmall,
-                        textAlign: TextAlign.center,
+                          label: Text(textoBotao),
+                        ),
                       ),
-                    ),
-                  if (convitesSnapshot.connectionState ==
-                      ConnectionState.waiting)
-                    const LinearProgressIndicator(),
-                  Expanded(
-                    child: convidados.isEmpty
-                        ? const Center(
-                            child: Text('Nenhum convidado encontrado.'),
-                          )
-                        : ListView.separated(
-                            padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
-                            itemCount: convidados.length,
-                            separatorBuilder: (_, _) =>
-                                const SizedBox(height: 8),
-                            itemBuilder: (context, index) {
-                              final convidado = convidados[index];
-                              final convite = convites[convidado.id];
-                              final telefoneValido =
-                                  _normalizarTelefone(convidado.whatsapp) !=
-                                  null;
-                              final emailInformado =
-                                  convidado.email?.trim().isNotEmpty == true;
-                              final corStatus = _corStatus(convite);
+                    );
+                  },
+                ),
+              if (_filaAtiva && _podeEnviarConvites)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+                  child: Text(
+                    'Cada WhatsApp é aberto individualmente para você tocar em Enviar.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              Expanded(
+                child: convidados.isEmpty
+                    ? const Center(child: Text('Nenhum convidado encontrado.'))
+                    : ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+                        itemCount: convidados.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 8),
+                        itemBuilder: (context, index) {
+                          final convidado = convidados[index];
+                          final convite = convites[convidado.id];
+                          final confirmacao = confirmacoes[convidado.id];
+                          final atrasado = _estaAtrasado(
+                            dataLimite,
+                            convite,
+                            confirmacao,
+                          );
+                          final telefoneValido =
+                              _normalizarTelefone(convidado.whatsapp) != null;
+                          final corStatus = _corStatus(convite, confirmacao);
+                          final confirmadoPeloConvidado =
+                              _foiConfirmadoPeloConvidado(convite, confirmacao);
+                          final confirmadoManualmente =
+                              _estaConfirmado(convite, confirmacao) &&
+                              confirmacao?['origem']?.toString() == 'manual';
 
-                              return Card(
-                                child: ListTile(
-                                  contentPadding: const EdgeInsets.fromLTRB(
-                                    16,
-                                    8,
-                                    8,
-                                    8,
-                                  ),
-                                  leading: CircleAvatar(
-                                    child: Icon(
-                                      telefoneValido
-                                          ? Icons.person
-                                          : Icons.person_outline,
-                                    ),
-                                  ),
-                                  title: Text(
-                                    convidado.nome,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  subtitle: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        _status(convite),
-                                        style: TextStyle(color: corStatus),
-                                      ),
-                                      Text(
-                                        telefoneValido
-                                            ? 'WhatsApp: ${convidado.whatsapp}'
-                                            : 'WhatsApp não informado',
-                                      ),
-                                      Text(
-                                        emailInformado
-                                            ? 'E-mail: ${convidado.email}'
-                                            : 'E-mail não informado',
-                                      ),
-                                    ],
-                                  ),
-                                  trailing: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      if (_podeEnviarConvites) ...[
-                                        IconButton(
-                                          tooltip: _podeEnviar(convite)
-                                              ? 'Abrir WhatsApp'
-                                              : 'Reenviar WhatsApp',
-                                            onPressed:
-                                                telefoneValido &&
-                                                    !_processandoEnvio
-                                              ? () => _prepararEnvio(
-                                                  convidado,
-                                                  'whatsapp',
-                                                  daFila: false,
-                                                  convite: convite,
-                                                )
-                                              : null,
-                                          icon: const FaIcon(
-                                            FontAwesomeIcons.whatsapp,
-                                            size: 22,
+                          return Card(
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              side: atrasado
+                                  ? BorderSide(
+                                      color: Colors.red.shade700,
+                                      width: 1.8,
+                                    )
+                                  : BorderSide.none,
+                            ),
+                            child: ListTile(
+                              contentPadding: const EdgeInsets.fromLTRB(
+                                16,
+                                8,
+                                8,
+                                8,
+                              ),
+                              leading: CircleAvatar(
+                                child: Icon(
+                                  telefoneValido
+                                      ? Icons.person
+                                      : Icons.person_outline,
+                                ),
+                              ),
+                              title: Text(
+                                convidado.nome,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (atrasado)
+                                    Padding(
+                                      padding: const EdgeInsets.only(bottom: 4),
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            Icons.warning_amber_rounded,
+                                            size: 18,
+                                            color: Colors.red.shade700,
                                           ),
-                                        ),
-                                      ],
-                                      Icon(
-                                        _iconeStatus(convite),
-                                        color: corStatus,
+                                          const SizedBox(width: 5),
+                                          Expanded(
+                                            child: Text(
+                                              'Não confirmou até ${_formatarData(dataLimite!)}',
+                                              style: TextStyle(
+                                                color: Colors.red.shade700,
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  Text(
+                                    _status(convite, confirmacao),
+                                    style: TextStyle(color: corStatus),
+                                  ),
+                                  if (_somenteConfirmacaoOnline)
+                                    Text(
+                                      telefoneValido
+                                          ? 'WhatsApp: ${convidado.whatsapp}'
+                                          : 'WhatsApp não informado',
+                                    ),
+                                  if (!_somenteConfirmacaoOnline &&
+                                      _podeEnviarConvites)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 8),
+                                      child: confirmadoPeloConvidado
+                                          ? Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Icon(
+                                                  Icons.check_circle,
+                                                  size: 18,
+                                                  color: corStatus,
+                                                ),
+                                                const SizedBox(width: 6),
+                                                Text(
+                                                  'Confirmado pelo convidado',
+                                                  style: TextStyle(
+                                                    color: corStatus,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ],
+                                            )
+                                          : Align(
+                                              alignment: Alignment.centerLeft,
+                                              child: OutlinedButton.icon(
+                                                onPressed: _processandoEnvio
+                                                    ? null
+                                                    : () =>
+                                                          _alternarConfirmacaoManual(
+                                                            convidado,
+                                                            convite,
+                                                            confirmacao,
+                                                          ),
+                                                icon: Icon(
+                                                  confirmadoManualmente
+                                                      ? Icons.undo
+                                                      : Icons
+                                                            .check_circle_outline,
+                                                ),
+                                                label: Text(
+                                                  confirmadoManualmente
+                                                      ? 'Desmarcar confirmação'
+                                                      : 'Confirmar presença',
+                                                ),
+                                              ),
+                                            ),
+                                    ),
+                                ],
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (_somenteConfirmacaoOnline &&
+                                      _podeEnviarConvites) ...[
+                                    IconButton(
+                                      tooltip: _podeEnviar(convite)
+                                          ? 'Abrir WhatsApp'
+                                          : 'Reenviar WhatsApp',
+                                      onPressed:
+                                          telefoneValido && !_processandoEnvio
+                                          ? () => _prepararEnvio(
+                                              convidado,
+                                              'whatsapp',
+                                              daFila: false,
+                                              convite: convite,
+                                            )
+                                          : null,
+                                      icon: const FaIcon(
+                                        FontAwesomeIcons.whatsapp,
                                         size: 22,
                                       ),
-                                    ],
+                                    ),
+                                  ],
+                                  Icon(
+                                    _iconeStatus(convite, confirmacao),
+                                    color: corStatus,
+                                    size: 22,
                                   ),
-                                ),
-                              );
-                            },
-                          ),
-                  ),
-                ],
-              );
-            },
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
           );
         },
       ),

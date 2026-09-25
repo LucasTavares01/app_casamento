@@ -25,7 +25,6 @@ class Mesa {
 class Convidado {
   final String id;
   final String nome;
-  final String? email;
   final String? whatsapp;
   final String? mesaId;
   final bool chegou;
@@ -46,7 +45,6 @@ class Convidado {
   Convidado({
     required this.id,
     required this.nome,
-    this.email,
     this.whatsapp,
     this.mesaId,
     required this.chegou,
@@ -58,7 +56,6 @@ class Convidado {
     return Convidado(
       id: map['id']?.toString() ?? '',
       nome: map['nome']?.toString() ?? '',
-      email: _textoOpcional(map['email']),
       whatsapp: _textoOpcional(map['whatsapp']),
       mesaId: map['mesa_id']?.toString(),
       chegou: _converterBooleano(map['chegou']),

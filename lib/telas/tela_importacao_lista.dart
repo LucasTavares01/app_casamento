@@ -25,6 +25,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
   bool _analisando = false;
   bool _publicando = false;
   bool? _possuiListaAtual;
+  ModoImportacaoLista? _modoImportacao;
   Timer? _carregamentoTimer;
   DateTime? _inicioAnalise;
   Duration _tempoAnalisando = Duration.zero;
@@ -69,7 +70,11 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
       final convidados = await servico.listarConvidados().first;
       if (mounted) {
         setState(() {
-          _possuiListaAtual = mesas.isNotEmpty || convidados.isNotEmpty;
+          final possuiLista = mesas.isNotEmpty || convidados.isNotEmpty;
+          _possuiListaAtual = possuiLista;
+          if (!possuiLista) {
+            _modoImportacao = ModoImportacaoLista.carregarNova;
+          }
         });
       }
     } catch (_) {
@@ -78,6 +83,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
       if (mounted) {
         setState(() {
           _possuiListaAtual = true;
+          _modoImportacao = null;
         });
       }
     }
@@ -92,6 +98,12 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
 
   Future<void> _selecionarArquivo() async {
     if (_analisando || _publicando) return;
+    if (_possuiListaAtual == true && _modoImportacao == null) {
+      setState(() {
+        _erro = 'Escolha se deseja adicionar uma nova lista ou atualizar a lista existente.';
+      });
+      return;
+    }
 
     try {
       final arquivo = await _servico.selecionarArquivo();
@@ -286,7 +298,6 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
 
     final convidadoAtualizado = convidado.copyWith(
       nome: nome,
-      email: valores?['email'],
       whatsapp: valores?['whatsapp'],
     );
     if (indiceMesa == null) {
@@ -383,6 +394,17 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
       return;
     }
     final possuiListaAtual = _possuiListaAtual ?? true;
+    final modo = possuiListaAtual
+        ? _modoImportacao
+        : ModoImportacaoLista.carregarNova;
+
+    if (modo == null) {
+      setState(() {
+        _erroPublicacao =
+            'Escolha se deseja adicionar uma nova lista ou atualizar a lista existente.';
+      });
+      return;
+    }
 
     final confirmado = await showDialog<bool>(
       context: context,
@@ -390,7 +412,11 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
       builder: (dialogContext) {
         return AlertDialog(
           title: Text(
-            possuiListaAtual ? 'Substituir a lista atual?' : 'Salvar lista?',
+            modo == ModoImportacaoLista.atualizarExistente
+                ? 'Atualizar lista existente?'
+                : possuiListaAtual
+                ? 'Carregar nova lista?'
+                : 'Salvar primeira lista?',
           ),
           content: SingleChildScrollView(
             child: Column(
@@ -401,23 +427,31 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
                   'A nova lista possui ${resultado.quantidadeMesas} mesas e '
                   '${resultado.quantidadeConvidados} convidados.',
                 ),
-                if (possuiListaAtual) ...[
+                if (modo == ModoImportacaoLista.atualizarExistente) ...[
                   const SizedBox(height: 12),
                   const Text(
-                    'Ao confirmar, serão substituídos:',
+                    'A atualização irá:',
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 6),
                   const Text(
-                    '• lista atual de mesas e convidados\n'
-                    '• check-ins e históricos de presença\n'
-                    '• conflitos e operações antigas\n'
-                    '• equipe e mensagens do chat',
+                    '• atualizar dados encontrados na lista\n'
+                    '• adicionar convidados novos\n'
+                    '• preservar confirmações, check-ins e histórico\n'
+                    '• manter convidados que não aparecem neste arquivo',
                   ),
                   const SizedBox(height: 12),
                   const Text(
-                    'Os usuários e as sessões ativas serão preservados. Todos os '
-                    'aparelhos receberão a nova versão da lista em tempo real.',
+                    'WhatsApp, mesas e observações serão atualizados quando '
+                    'existirem no arquivo.',
+                  ),
+                ] else if (modo == ModoImportacaoLista.carregarNova &&
+                    possuiListaAtual) ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    'As mesas e os convidados atuais serão substituídos por '
+                    'este arquivo. As confirmações, check-ins e conflitos '
+                    'serão zerados. O evento e a equipe serão mantidos.',
                   ),
                 ] else ...[
                   const SizedBox(height: 12),
@@ -442,13 +476,6 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
                     ),
                   ),
                 ],
-                if (possuiListaAtual) ...[
-                  const SizedBox(height: 12),
-                  const Text(
-                    'A substituição é permanente.',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ],
               ],
             ),
           ),
@@ -458,14 +485,14 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
               child: const Text('Cancelar'),
             ),
             FilledButton.icon(
-              style: FilledButton.styleFrom(
-                backgroundColor: Theme.of(dialogContext).colorScheme.error,
-                foregroundColor: Theme.of(dialogContext).colorScheme.onError,
-              ),
               onPressed: () => Navigator.pop(dialogContext, true),
               icon: const Icon(Icons.cloud_upload_outlined),
               label: Text(
-                possuiListaAtual ? 'Substituir agora' : 'Salvar lista',
+                modo == ModoImportacaoLista.atualizarExistente
+                    ? 'Atualizar lista'
+                    : possuiListaAtual
+                    ? 'Carregar nova lista'
+                    : 'Salvar lista',
               ),
             ),
           ],
@@ -483,7 +510,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
     });
 
     try {
-      final publicacao = await _servico.publicarLista(resultado);
+      final publicacao = await _servico.publicarLista(resultado, modo: modo);
 
       var sincronizacaoConcluida = false;
       try {
@@ -498,23 +525,31 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
         return;
       }
 
+      final tituloConclusao = modo == ModoImportacaoLista.atualizarExistente
+          ? 'Lista atualizada'
+          : possuiListaAtual
+          ? 'Nova lista carregada'
+          : 'Primeira lista salva';
+
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
         builder: (dialogContext) {
           return AlertDialog(
-            title: const Row(
+            title: Row(
               children: [
                 Icon(Icons.cloud_done_outlined),
                 SizedBox(width: 10),
-                Expanded(child: Text('Nova lista publicada')),
+                Expanded(child: Text(tituloConclusao)),
               ],
             ),
             content: Text(
-              'Versão ${publicacao.versao} publicada com '
+              'Versão ${publicacao.versao} processada com '
               '${publicacao.mesas} mesas e ${publicacao.convidados} convidados.'
+              '${publicacao.adicionados > 0 ? '\n${publicacao.adicionados} registro(s) adicionado(s).' : ''}'
+              '${publicacao.atualizados > 0 ? '\n${publicacao.atualizados} registro(s) atualizado(s).' : ''}'
               '${publicacao.convidadosSemMesa > 0 ? '\n\n${publicacao.convidadosSemMesa} convidado(s) ficaram sem mesa.' : ''}'
-              '\n\n${sincronizacaoConcluida ? 'Este aparelho já recebeu a nova lista.' : 'A lista foi publicada. Este aparelho terminará de baixá-la na próxima sincronização.'}'
+              '\n\n${sincronizacaoConcluida ? 'Este aparelho já recebeu as alterações.' : 'As alterações foram publicadas. Este aparelho terminará de baixá-las na próxima sincronização.'}'
               '\nOs demais aparelhos serão atualizados em tempo real.',
             ),
             actions: [
@@ -542,7 +577,7 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
         return;
       }
       setState(() {
-        _erroPublicacao = 'Não foi possível substituir a lista: $erro';
+        _erroPublicacao = 'Não foi possível publicar a lista: $erro';
       });
     } finally {
       if (mounted) {
@@ -600,14 +635,14 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
             const CircularProgressIndicator(),
             const SizedBox(height: 22),
             Text(
-              'Atualizando a lista oficial',
+              'Processando a lista oficial',
               style: Theme.of(context).textTheme.titleMedium,
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
             const Text(
-              'Não feche o aplicativo. A versão oficial está sendo atualizada '
-              'e todos os dados da nova lista estão sendo gravados.',
+              'Não feche o aplicativo. As alterações estão sendo gravadas '
+              'com segurança e serão sincronizadas com os demais aparelhos.',
               textAlign: TextAlign.center,
             ),
           ],
@@ -672,6 +707,57 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
+  Widget _opcaoModoImportacao({
+    required ModoImportacaoLista modo,
+    required IconData icone,
+    required String titulo,
+    required String descricao,
+  }) {
+    final selecionado = _modoImportacao == modo;
+    final cores = Theme.of(context).colorScheme;
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      color: selecionado ? cores.primaryContainer : null,
+      child: InkWell(
+        onTap: _analisando || _publicando
+            ? null
+            : () => setState(() {
+                _modoImportacao = modo;
+                _erro = null;
+              }),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Icon(icone, color: cores.primary),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      titulo,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(descricao),
+                  ],
+                ),
+              ),
+              Icon(
+                selecionado
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_unchecked,
+                color: selecionado ? cores.primary : cores.outline,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _construirInicio() {
     final arquivo = _arquivoSelecionado;
 
@@ -706,11 +792,40 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 18),
+                if (_possuiListaAtual == true) ...[
+                  const Text(
+                    'Este evento já possui dados cadastrados. Escolha como '
+                    'deseja processar o novo arquivo:',
+                  ),
+                  const SizedBox(height: 8),
+                  _opcaoModoImportacao(
+                    modo: ModoImportacaoLista.carregarNova,
+                    icone: Icons.playlist_add_outlined,
+                    titulo: 'Carregar nova lista',
+                    descricao:
+                        'Substitui a lista atual e zera confirmações e check-ins.',
+                  ),
+                  _opcaoModoImportacao(
+                    modo: ModoImportacaoLista.atualizarExistente,
+                    icone: Icons.sync_outlined,
+                    titulo: 'Atualizar lista existente',
+                    descricao:
+                        'Atualiza dados encontrados e preserva confirmações e histórico.',
+                  ),
+                  const SizedBox(height: 8),
+                ] else if (_possuiListaAtual == null) ...[
+                  const LinearProgressIndicator(),
+                  const SizedBox(height: 8),
+                  const Text('Verificando se este evento já possui dados...'),
+                  const SizedBox(height: 8),
+                ],
                 if (arquivo == null) ...[
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
-                      onPressed: _selecionarArquivo,
+                      onPressed: _possuiListaAtual == null
+                          ? null
+                          : _selecionarArquivo,
                       icon: const Icon(Icons.upload_file_outlined),
                       label: const Text('Escolher arquivo'),
                     ),
@@ -894,8 +1009,10 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
           onPressed: () => _confirmarPublicacao(resultado),
           icon: const Icon(Icons.cloud_upload_outlined),
           label: Text(
-            (_possuiListaAtual ?? false)
-                ? 'Substituir lista atual'
+            _modoImportacao == ModoImportacaoLista.atualizarExistente
+                ? 'Atualizar lista existente'
+                : (_possuiListaAtual ?? false)
+                ? 'Carregar nova lista'
                 : 'Salvar primeira lista',
           ),
         ),
@@ -1053,9 +1170,6 @@ class _TelaImportacaoListaState extends State<TelaImportacaoLista>
     if (convidado.categoria != CategoriaConvidado.normal) {
       informacoes.add(convidado.categoria.rotulo);
     }
-    if (convidado.email?.trim().isNotEmpty == true) {
-      informacoes.add('E-mail: ${convidado.email}');
-    }
     if (convidado.whatsapp?.trim().isNotEmpty == true) {
       informacoes.add('WhatsApp: ${convidado.whatsapp}');
     }
@@ -1093,21 +1207,18 @@ class _DialogEditarConvidado extends StatefulWidget {
 
 class _DialogEditarConvidadoState extends State<_DialogEditarConvidado> {
   late final TextEditingController _nome;
-  late final TextEditingController _email;
   late final TextEditingController _whatsapp;
 
   @override
   void initState() {
     super.initState();
     _nome = TextEditingController(text: widget.convidado.nome);
-    _email = TextEditingController(text: widget.convidado.email ?? '');
     _whatsapp = TextEditingController(text: widget.convidado.whatsapp ?? '');
   }
 
   @override
   void dispose() {
     _nome.dispose();
-    _email.dispose();
     _whatsapp.dispose();
     super.dispose();
   }
@@ -1115,7 +1226,6 @@ class _DialogEditarConvidadoState extends State<_DialogEditarConvidado> {
   void _salvar() {
     Navigator.of(context).pop({
       'nome': _nome.text,
-      'email': _email.text,
       'whatsapp': _whatsapp.text,
     });
   }
@@ -1133,12 +1243,6 @@ class _DialogEditarConvidadoState extends State<_DialogEditarConvidado> {
               autofocus: true,
               textCapitalization: TextCapitalization.words,
               decoration: const InputDecoration(labelText: 'Nome'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _email,
-              keyboardType: TextInputType.emailAddress,
-              decoration: const InputDecoration(labelText: 'E-mail'),
             ),
             const SizedBox(height: 12),
             TextField(

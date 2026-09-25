@@ -1,3 +1,17 @@
+enum ModoImportacaoLista {
+  carregarNova,
+  atualizarExistente;
+
+  String get valorJson {
+    switch (this) {
+      case ModoImportacaoLista.carregarNova:
+        return 'carregar_nova';
+      case ModoImportacaoLista.atualizarExistente:
+        return 'atualizar_existente';
+    }
+  }
+}
+
 class ResultadoPreviaImportacao {
   final String arquivoNome;
   final String resumo;
@@ -189,7 +203,6 @@ class MesaPreviaImportacao {
 class ConvidadoPreviaImportacao {
   final String nome;
   final String? descricao;
-  final String? email;
   final String? whatsapp;
   final CategoriaConvidado categoria;
   final double confianca;
@@ -197,7 +210,6 @@ class ConvidadoPreviaImportacao {
   const ConvidadoPreviaImportacao({
     required this.nome,
     required this.descricao,
-    required this.email,
     required this.whatsapp,
     required this.categoria,
     required this.confianca,
@@ -209,7 +221,6 @@ class ConvidadoPreviaImportacao {
     return ConvidadoPreviaImportacao(
       nome: _texto(json['nome'], fallback: 'Nome não identificado'),
       descricao: descricao,
-      email: _textoOpcional(json['email']),
       whatsapp: _textoOpcional(json['whatsapp']),
       categoria: CategoriaConvidado.fromJson(json['categoria']),
       confianca: _numero(
@@ -223,7 +234,6 @@ class ConvidadoPreviaImportacao {
     return {
       'nome': nome,
       'descricao': descricao,
-      'email': email,
       'whatsapp': whatsapp,
       'categoria': categoria.valorJson,
       'confianca': confianca,
@@ -233,7 +243,6 @@ class ConvidadoPreviaImportacao {
   ConvidadoPreviaImportacao copyWith({
     String? nome,
     Object? descricao = _campoNaoAlterado,
-    Object? email = _campoNaoAlterado,
     Object? whatsapp = _campoNaoAlterado,
     CategoriaConvidado? categoria,
     double? confianca,
@@ -243,9 +252,6 @@ class ConvidadoPreviaImportacao {
       descricao: identical(descricao, _campoNaoAlterado)
           ? this.descricao
           : _textoOpcional(descricao),
-      email: identical(email, _campoNaoAlterado)
-          ? this.email
-          : _textoOpcional(email),
       whatsapp: identical(whatsapp, _campoNaoAlterado)
           ? this.whatsapp
           : _textoOpcional(whatsapp),
@@ -430,6 +436,8 @@ class ResultadoPublicacaoLista {
   final int mesas;
   final int convidados;
   final int convidadosSemMesa;
+  final int adicionados;
+  final int atualizados;
   final String publicadoPor;
 
   const ResultadoPublicacaoLista({
@@ -437,6 +445,8 @@ class ResultadoPublicacaoLista {
     required this.mesas,
     required this.convidados,
     required this.convidadosSemMesa,
+    required this.adicionados,
+    required this.atualizados,
     required this.publicadoPor,
   });
 
@@ -446,6 +456,8 @@ class ResultadoPublicacaoLista {
       mesas: _inteiroOpcional(json['mesas']) ?? 0,
       convidados: _inteiroOpcional(json['convidados']) ?? 0,
       convidadosSemMesa: _inteiroOpcional(json['convidados_sem_mesa']) ?? 0,
+      adicionados: _inteiroOpcional(json['adicionados']) ?? 0,
+      atualizados: _inteiroOpcional(json['atualizados']) ?? 0,
       publicadoPor: _texto(json['publicado_por']),
     );
   }

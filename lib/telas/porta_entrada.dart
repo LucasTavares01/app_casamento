@@ -520,17 +520,48 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
                       'ConfirmaAi',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontSize: 26,
+                        fontSize: 32,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Entre para acessar seus eventos e sua equipe.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey.shade700),
+                    const SizedBox(height: 28),
+                    SizedBox(
+                      height: 54,
+                      child: ElevatedButton.icon(
+                        onPressed: _carregando ? null : _criarConta,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFE96851),
+                          foregroundColor: Colors.white,
+                          textStyle: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        icon: const Icon(
+                          Icons.person_add_alt_1_outlined,
+                          size: 22,
+                        ),
+                        label: const Text('Criar conta de cerimonialista'),
+                      ),
                     ),
-                    const SizedBox(height: 32),
+                    const SizedBox(height: 28),
+                    Row(
+                      children: [
+                        const Expanded(child: Divider()),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          child: Text(
+                            'Já possui uma conta?',
+                            style: TextStyle(color: Colors.grey.shade700),
+                          ),
+                        ),
+                        const Expanded(child: Divider()),
+                      ],
+                    ),
+                    const SizedBox(height: 22),
                     TextFormField(
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
@@ -620,20 +651,6 @@ class _TelaPortaDeEntradaState extends State<TelaPortaDeEntrada>
                     TextButton(
                       onPressed: _carregando ? null : _recuperarSenha,
                       child: const Text('Esqueci minha senha'),
-                    ),
-                    Text(
-                      'Recebeu um convite para trabalhar? Abra o link recebido no seu e-mail para criar ou acessar sua conta de funcionário.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.grey.shade700,
-                        fontSize: 12,
-                      ),
-                    ),
-                    const Divider(height: 34),
-                    OutlinedButton.icon(
-                      onPressed: _carregando ? null : _criarConta,
-                      icon: const Icon(Icons.person_add_alt_1_outlined),
-                      label: const Text('Criar conta de cerimonialista'),
                     ),
                   ],
                 ),

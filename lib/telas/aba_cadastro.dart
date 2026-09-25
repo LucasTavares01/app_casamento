@@ -161,7 +161,6 @@ class _AbaCadastroState extends State<AbaCadastro> {
 
   void _dialogConvidado(List<Mesa> mesas, {Convidado? convidadoEdit}) {
     final nomeCtrl = TextEditingController(text: convidadoEdit?.nome ?? '');
-    final emailCtrl = TextEditingController(text: convidadoEdit?.email ?? '');
     final whatsappCtrl = TextEditingController(
       text: convidadoEdit?.whatsapp ?? '',
     );
@@ -186,15 +185,6 @@ class _AbaCadastroState extends State<AbaCadastro> {
                     controller: nomeCtrl,
                     decoration: const InputDecoration(
                       hintText: 'Nome do Convidado',
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: emailCtrl,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(
-                      labelText: 'E-mail (opcional)',
-                      prefixIcon: Icon(Icons.email_outlined),
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -258,7 +248,6 @@ class _AbaCadastroState extends State<AbaCadastro> {
                           valorMesaSelecionada == valorSemMesa
                               ? null
                               : valorMesaSelecionada,
-                          email: emailCtrl.text,
                           whatsapp: whatsappCtrl.text,
                         );
                       } else {
@@ -268,7 +257,6 @@ class _AbaCadastroState extends State<AbaCadastro> {
                           valorMesaSelecionada == valorSemMesa
                               ? null
                               : valorMesaSelecionada,
-                          email: emailCtrl.text,
                           whatsapp: whatsappCtrl.text,
                         );
                       }
