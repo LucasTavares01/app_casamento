@@ -170,7 +170,10 @@ class RecepcaoConfirmacoesEstado extends ChangeNotifier {
       (registro) => registro['convidado_id']?.toString() == convidadoId,
     );
     atuais.add({
-      'id': 'otimista-$convidadoId',
+      // O identificador precisa ser exatamente o mesmo usado no rollback.
+      // A sequência evita que duas chamadas simultâneas removam a confirmação
+      // otimista uma da outra.
+      'id': idOtimista,
       'convidado_id': convidadoId,
       'status': confirmado ? 'confirmado' : 'aguardando',
       'origem': 'manual',

@@ -830,7 +830,12 @@ class SessaoServico {
     await RealtimeServico.instance.encerrar();
     _usuarioAtual = null;
     _usuarioAutenticado = null;
-    await CasamentoAtualServico.instance.limparPersistido();
+
+    // A sessão nova não pode reutilizar registros nem operações pendentes da
+    // conta anterior. Isso acontece quando o Auth troca de usuário fora do
+    // fluxo normal de logout (por exemplo, ao concluir um convite Google).
+    // A limpeza preserva apenas o identificador do aparelho.
+    await _limparTodosOsDadosLocais();
   }
 
   /// Mantido para os serviços de sincronização. A renovação do token é feita
