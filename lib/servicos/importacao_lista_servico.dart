@@ -30,7 +30,10 @@ class ImportacaoListaServico {
 
   static final ImportacaoListaServico instance = ImportacaoListaServico._();
 
-  static const int _tamanhoMaximoBytes = 30 * 1024 * 1024;
+  // A importação é enviada em uma única requisição JSON (base64). Um limite
+  // conservador evita que arquivos grandes estourem o tempo/memória do
+  // gateway antes de a IA começar a processá-los.
+  static const int _tamanhoMaximoBytes = 15 * 1024 * 1024;
   static const List<String> _extensoesPermitidas = [
     'pdf',
     'xlsx',
@@ -51,7 +54,9 @@ class ImportacaoListaServico {
       type: FileType.custom,
       allowedExtensions: _extensoesPermitidas,
       allowMultiple: false,
-      withData: true,
+      // Evita duplicar arquivos grandes na memória antes da validação. O
+      // caminho local continua sendo lido em [_obterBytes] quando disponível.
+      withData: false,
     );
 
     if (selecao == null || selecao.files.isEmpty) {
@@ -59,6 +64,11 @@ class ImportacaoListaServico {
     }
 
     final arquivo = selecao.files.single;
+    if (arquivo.size > _tamanhoMaximoBytes) {
+      throw const ImportacaoListaException(
+        'O arquivo ultrapassa 15 MB. Reduza o tamanho e tente novamente.',
+      );
+    }
     final extensao = (arquivo.extension ?? _obterExtensao(arquivo.name))
         .toLowerCase();
 
@@ -76,7 +86,7 @@ class ImportacaoListaServico {
 
     if (bytes.length > _tamanhoMaximoBytes) {
       throw const ImportacaoListaException(
-        'O arquivo ultrapassa 30 MB. Reduza o tamanho e tente novamente.',
+        'O arquivo ultrapassa 15 MB. Reduza o tamanho e tente novamente.',
       );
     }
 
@@ -114,6 +124,12 @@ class ImportacaoListaServico {
       throw const ImportacaoListaException('A foto selecionada está vazia.');
     }
 
+    if (bytes.length > _tamanhoMaximoBytes) {
+      throw const ImportacaoListaException(
+        'A foto ultrapassa 15 MB. Reduza a resolução e tente novamente.',
+      );
+    }
+
     return ArquivoListaSelecionado(
       nome: foto.name.isEmpty ? 'foto_lista.jpg' : foto.name,
       mimeType: 'image/jpeg',
@@ -138,7 +154,7 @@ class ImportacaoListaServico {
   }) async {
     if (bytes.length > _tamanhoMaximoBytes) {
       throw const ImportacaoListaException(
-        'O arquivo ultrapassa 30 MB. Reduza o tamanho e tente novamente.',
+              'O arquivo ultrapassa 15 MB. Reduza o tamanho e tente novamente.',
       );
     }
 
@@ -291,11 +307,18 @@ class ImportacaoListaServico {
       );
     }
 
-    final nomesVazios = resultado.todosConvidados
-        .where((convidado) => convidado.nome.trim().isEmpty)
+    final nomesInvalidos = resultado.todosConvidados
+        .where((convidado) {
+          final nome = convidado.nome.trim().toLowerCase();
+          return nome.isEmpty ||
+              nome == 'nome não identificado' ||
+              nome == 'nome nao identificado';
+        })
         .length;
-    if (nomesVazios > 0) {
-      problemas.add('$nomesVazios convidado(s) estão sem nome.');
+    if (nomesInvalidos > 0) {
+      problemas.add(
+        '$nomesInvalidos convidado(s) estão sem nome reconhecido. Revise antes de publicar.',
+      );
     }
 
     return problemas;

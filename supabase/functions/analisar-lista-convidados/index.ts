@@ -7,10 +7,17 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const MAX_FILE_BYTES = 30 * 1024 * 1024;
+// A requisição leva o arquivo inteiro em JSON/base64. Um limite conservador
+// reduz pressão de memória e evita que o gateway encerre arquivos grandes
+// antes de a IA concluir o processamento.
+const MAX_FILE_BYTES = 15 * 1024 * 1024;
 const MAX_EXTRACTED_TEXT_CHARS = 1_500_000;
-const GEMINI_TIMEOUT_MS = 180_000;
-const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_TIMEOUT_MS = 120_000;
+// Mantém as tentativas dentro do limite de espera do aplicativo (3 minutos),
+// mas permite recuperar indisponibilidades transitórias do provedor.
+const GEMINI_TOTAL_TIMEOUT_MS = 140_000;
+const GEMINI_RETRY_DELAYS_MS = [1_500, 4_000];
+const GEMINI_MODEL = "gemini-3.5-flash-lite";
 
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
@@ -192,7 +199,7 @@ Deno.serve(async (request) => {
     const approximateBytes = Math.floor((arquivoBase64.length * 3) / 4);
     if (approximateBytes > MAX_FILE_BYTES) {
       return jsonResponse(
-        { mensagem: "O arquivo ultrapassa o limite de 30 MB." },
+        { mensagem: "O arquivo ultrapassa o limite de 15 MB." },
         413,
       );
     }
@@ -247,13 +254,18 @@ Deno.serve(async (request) => {
       console.error(
         "Gemini error",
         geminiResponse.status,
-        JSON.stringify(geminiResponse.body),
+        geminiResponse.model,
+        cleanString(geminiResponse.body?.error?.message || geminiResponse.body?.message),
       );
 
       return jsonResponse(
         {
           mensagem:
-            extractGeminiError(geminiResponse.body, geminiResponse.status) ||
+            extractGeminiError(
+              geminiResponse.body,
+              geminiResponse.status,
+              geminiResponse.model,
+            ) ||
             "O Gemini não conseguiu processar o arquivo.",
         },
         geminiResponse.status === 429 ? 429 : 502,
@@ -272,7 +284,12 @@ Deno.serve(async (request) => {
     try {
       rawResult = JSON.parse(stripJsonFences(outputText));
     } catch {
-      console.error("Invalid Gemini JSON", outputText);
+      // A resposta pode conter nomes, telefones e e-mails. Não grave o JSON
+      // completo nos logs de produção.
+      console.error("Invalid Gemini JSON", {
+        model: geminiResponse.model,
+        responseLength: outputText.length,
+      });
       return jsonResponse(
         { mensagem: "O Gemini retornou uma prévia inválida." },
         502,
@@ -287,7 +304,7 @@ Deno.serve(async (request) => {
       resultado,
       metadados: {
         provedor: "gemini",
-        modelo: model,
+        modelo: geminiResponse.model,
         usuario: sessionValidation.userName,
       },
     });
@@ -418,14 +435,155 @@ async function callGemini(input: {
   apiKey: string;
   model: string;
   parts: Array<Record<string, unknown>>;
-}): Promise<{ ok: boolean; status: number; body: any }> {
-  const endpoint =
-  `https://generativelanguage.googleapis.com/v1beta/models/${input.model}:generateContent`;
+}): Promise<{ ok: boolean; status: number; body: any; model: string }> {
+  const deadline = Date.now() + GEMINI_TOTAL_TIMEOUT_MS;
+  const modelos = [
+    input.model,
+    cleanString(Deno.env.get("GEMINI_FALLBACK_MODEL")),
+  ].filter(
+    (model, index, all) =>
+      model &&
+      all.indexOf(model) === index &&
+      (index === 0 || isCurrentGeminiModel(model)),
+  );
 
-const geminiHeaders = {
-  "Content-Type": "application/json",
-  "x-goog-api-key": input.apiKey,
-};
+  let ultimaResposta: {
+    ok: boolean;
+    status: number;
+    body: any;
+    model: string;
+  } = {
+    ok: false,
+    status: 503,
+    body: {
+      error: {
+        message: "O serviço de IA não respondeu a tempo.",
+      },
+    },
+    model: input.model,
+  };
+
+  for (const model of modelos) {
+    const resposta = await callGeminiComRetry({
+      ...input,
+      model,
+      deadline,
+    });
+    ultimaResposta = resposta;
+
+    if (
+      resposta.ok ||
+      (!isTransientGeminiStatus(resposta.status) &&
+        !isModelUnavailableResponse(resposta))
+    ) {
+      return resposta;
+    }
+
+    if (Date.now() >= deadline) {
+      break;
+    }
+
+    console.warn(
+      "Gemini model unavailable; trying next configured model",
+      model,
+      resposta.status,
+    );
+  }
+
+  return ultimaResposta;
+}
+
+async function callGeminiComRetry(input: {
+  apiKey: string;
+  model: string;
+  parts: Array<Record<string, unknown>>;
+  deadline: number;
+}): Promise<{ ok: boolean; status: number; body: any; model: string }> {
+  let resposta: { ok: boolean; status: number; body: any; model: string };
+
+  for (let tentativa = 0; ; tentativa++) {
+    const tempoRestante = input.deadline - Date.now();
+    if (tempoRestante <= 0) {
+      return {
+        ok: false,
+        status: 504,
+        body: {
+          error: { message: "O serviço de IA demorou demais para responder." },
+        },
+        model: input.model,
+      };
+    }
+
+    try {
+      resposta = await callGeminiUmaVez({
+        ...input,
+        timeoutMs: Math.min(GEMINI_TIMEOUT_MS, tempoRestante),
+      });
+    } catch (error) {
+      // AbortSignal.timeout lança uma exceção em vez de retornar HTTP 504.
+      // Convertê-la em resposta transitória permite que a política de retry
+      // funcione e evita transformar timeout em erro interno genérico.
+      const nomeErro = error instanceof Error ? error.name : "";
+      const mensagemErro = error instanceof Error ? error.message : "";
+      const abortado = nomeErro === "AbortError" || nomeErro === "TimeoutError";
+      resposta = {
+        ok: false,
+        status: abortado ? 504 : 503,
+        body: {
+          error: {
+            message: abortado
+              ? "O serviço de IA demorou demais para responder."
+              : "Não foi possível alcançar o serviço de IA.",
+          },
+        },
+        model: input.model,
+      };
+      console.warn("Gemini request failed", {
+        model: input.model,
+        error: nomeErro || "Error",
+        message: mensagemErro.slice(0, 200),
+      });
+    }
+
+    if (
+      resposta.ok ||
+      !isTransientGeminiStatus(resposta.status) ||
+      tentativa >= GEMINI_RETRY_DELAYS_MS.length
+    ) {
+      return resposta;
+    }
+
+    const atrasoBase = GEMINI_RETRY_DELAYS_MS[tentativa];
+    const atrasoComJitter = atrasoBase + Math.floor(Math.random() * 500);
+    const atraso = Math.min(atrasoComJitter, input.deadline - Date.now());
+    if (atraso <= 0) {
+      return resposta;
+    }
+
+    console.warn(
+      "Transient Gemini error; retrying",
+      input.model,
+      resposta.status,
+      `attempt=${tentativa + 1}`,
+      `delayMs=${atraso}`,
+    );
+    await delay(atraso);
+  }
+}
+
+async function callGeminiUmaVez(input: {
+  apiKey: string;
+  model: string;
+  parts: Array<Record<string, unknown>>;
+  timeoutMs: number;
+}): Promise<{ ok: boolean; status: number; body: any; model: string }> {
+  const endpoint =
+    `https://generativelanguage.googleapis.com/v1beta/models/${input.model}:generateContent`;
+
+  const geminiHeaders = {
+    "Content-Type": "application/json",
+    "x-goog-api-key": input.apiKey,
+  };
 
   // Configuração de resposta estruturada usada pela API Gemini.
   const legacyConfig = {
@@ -437,7 +595,7 @@ const geminiHeaders = {
   let response = await fetch(endpoint, {
     method: "POST",
     headers: geminiHeaders,
-    signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+    signal: AbortSignal.timeout(input.timeoutMs),
     body: JSON.stringify({
       contents: [{ role: "user", parts: input.parts }],
       generationConfig: legacyConfig,
@@ -457,7 +615,7 @@ const geminiHeaders = {
     response = await fetch(endpoint, {
       method: "POST",
       headers: geminiHeaders,
-      signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      signal: AbortSignal.timeout(input.timeoutMs),
       body: JSON.stringify({
         contents: [{ role: "user", parts: input.parts }],
         generationConfig: {
@@ -474,7 +632,52 @@ const geminiHeaders = {
     responseBody = await safeJson(response);
   }
 
-  return { ok: response.ok, status: response.status, body: responseBody };
+  return {
+    ok: response.ok,
+    status: response.status,
+    body: responseBody,
+    model: input.model,
+  };
+}
+
+function isTransientGeminiStatus(status: number): boolean {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
+
+function isModelUnavailableResponse(response: {
+  status: number;
+  body: any;
+}): boolean {
+  if (response.status === 404) {
+    return true;
+  }
+
+  if (response.status !== 400) {
+    return false;
+  }
+
+  const message = cleanString(
+    response.body?.error?.message || response.body?.message,
+  ).toLowerCase();
+
+  return (
+    isStructuredOutputFieldError(response.body) ||
+    (message.includes("model") &&
+      (message.includes("not found") ||
+        message.includes("not support") ||
+        message.includes("unsupported") ||
+        message.includes("unavailable")))
+  );
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isCurrentGeminiModel(model: string): boolean {
+  // Não reutiliza um fallback antigo (por exemplo, Gemini 2.5) que pode
+  // estar salvo no segredo do projeto e já não ser aceito pelo provedor.
+  return /^gemini-3\./i.test(model);
 }
 
 function isStructuredOutputFieldError(body: any): boolean {
@@ -515,7 +718,11 @@ function extractGeminiText(body: any): string | null {
   return texts.length > 0 ? texts.join("") : null;
 }
 
-function extractGeminiError(body: any, status: number): string | null {
+function extractGeminiError(
+  body: any,
+  status: number,
+  model = GEMINI_MODEL,
+): string | null {
   const raw = cleanString(body?.error?.message || body?.message);
 
   if (status === 400 && raw.toLowerCase().includes("api key")) {
@@ -527,11 +734,15 @@ function extractGeminiError(body: any, status: number): string | null {
   }
 
   if (status === 404) {
-    return `O modelo ${GEMINI_MODEL} não foi encontrado ou não está disponível para esta chave.`;
+    return `O modelo ${model} não foi encontrado ou não está disponível para esta chave.`;
   }
 
   if (status === 429) {
     return "O limite da API Gemini foi atingido. Aguarde um pouco e tente novamente.";
+  }
+
+  if (status >= 500 && status <= 599) {
+    return "O serviço de IA está temporariamente sobrecarregado. Aguarde alguns instantes e tente novamente.";
   }
 
   return raw || null;
@@ -665,14 +876,14 @@ function normalizeGuest(value: unknown) {
   const confidence = Number(guest.confianca);
 
   return {
-    nome: cleanString(guest.nome) || "Nome não identificado",
+    nome: cleanString(guest.nome),
     descricao: description || null,
     email: emailEncontrado || null,
     whatsapp: whatsappEncontrado || null,
     categoria: normalizeGuestCategory(guest.categoria),
     confianca: Number.isFinite(confidence)
       ? Math.max(0, Math.min(1, confidence))
-      : 1,
+      : 0,
   };
 }
 
@@ -963,6 +1174,14 @@ function decodeBase64(value: string): Uint8Array {
 }
 
 function optionalNonNegativeInteger(value: unknown): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === "string" && value.trim() === "") {
+    return null;
+  }
+
   const number = Number(value);
   if (!Number.isInteger(number) || number < 0) {
     return null;

@@ -9,7 +9,7 @@ const corsHeaders = {
 
 const REDIRECT_LOGIN = "br.com.appcasamento://login-callback";
 const LINK_WEB_CONVITE_FUNCIONARIO =
-  "https://confirmaai-convites.netlify.app/convite-funcionario/?token=";
+  "https://confirmaaiweb.netlify.app/convite-funcionario/?token=";
 const USUARIOS_POR_PAGINA = 1000;
 
 // O cliente administrativo é criado sem um tipo de banco gerado nesta função.

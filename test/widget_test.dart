@@ -2,6 +2,7 @@ import 'package:app_casamento/servicos/casamento_atual_servico.dart';
 import 'package:app_casamento/servicos/recepcao_confirmacoes_servico.dart';
 import 'package:app_casamento/servicos/sessao_servico.dart';
 import 'package:app_casamento/telas/tela_convites_online.dart';
+import 'package:app_casamento/modelos/modelos_importacao.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -56,5 +57,35 @@ void main() {
     expect(removerConfirmacaoOtimista(registros, 'otimista-a-1'), [
       {'id': 'otimista-b-1', 'convidado_id': 'b', 'status': 'confirmado'},
     ]);
+  });
+
+  test('mantém campos ausentes da prévia como inválidos para revisão', () {
+    final resultado = ResultadoPreviaImportacao.fromJson({
+      'arquivo_nome': 'lista.pdf',
+      'resumo': '',
+      'mesas': [
+        {
+          'numero': null,
+          'nome_exibicao': 'Mesa sem número',
+          'detalhe': '',
+          'capacidade': null,
+          'convidados': [
+            {
+              'nome': null,
+              'descricao': '',
+              'whatsapp': '',
+              'categoria': 'normal',
+              'confianca': null,
+            },
+          ],
+        },
+      ],
+      'convidados_sem_mesa': [],
+      'avisos': [],
+    });
+
+    expect(resultado.mesas.single.numero, isNull);
+    expect(resultado.todosConvidados.single.nome, isEmpty);
+    expect(resultado.todosConvidados.single.confianca, 0);
   });
 }

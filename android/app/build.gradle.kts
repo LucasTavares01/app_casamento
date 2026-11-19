@@ -52,12 +52,14 @@ android {
 
     buildTypes {
         release {
-            // Mantém a compilação local funcionando até a chave de upload ser criada.
-            signingConfig = if (keystorePropertiesFile.exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
+            // Nunca gere um release com a chave de debug. Isso poderia criar
+            // um AAB impossível de atualizar no Play Console.
+            if (!keystorePropertiesFile.exists()) {
+                throw GradleException(
+                    "android/key.properties não encontrado; configure a chave de release antes de gerar o AAB.",
+                )
             }
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }

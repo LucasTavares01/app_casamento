@@ -7,8 +7,13 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
+// Mantém a função abaixo do limite de espera da Edge Function e permite
+// responder com erro controlado, em vez de deixar o gateway encerrar a
+// requisição sem uma mensagem útil.
 const GEMINI_TIMEOUT_MS = 120_000;
-const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_TOTAL_TIMEOUT_MS = 140_000;
+const GEMINI_RETRY_DELAYS_MS = [1_500, 4_000];
+const GEMINI_MODEL = "gemini-3.8-flash";
 const MAX_PAYLOAD_CHARS = 180_000;
 
 const insightsSchema = {
@@ -106,7 +111,9 @@ Deno.serve(async (request) => {
       );
     }
 
-    const model = Deno.env.get("GEMINI_MODEL") || GEMINI_MODEL;
+    // O modelo principal é fixo para não depender de um segredo incorreto.
+    // Um fallback opcional permite trocar somente quando o provedor exigir.
+    const model = GEMINI_MODEL;
     const prompt = buildPrompt(serializedData);
     const geminiResponse = await callGemini({
       apiKey: geminiKey,
@@ -118,13 +125,18 @@ Deno.serve(async (request) => {
       console.error(
         "Gemini error",
         geminiResponse.status,
-        JSON.stringify(geminiResponse.body),
+        geminiResponse.model,
+        cleanString(geminiResponse.body?.error?.message || geminiResponse.body?.message),
       );
 
       return jsonResponse(
         {
           mensagem:
-            extractGeminiError(geminiResponse.body) ||
+            extractGeminiError(
+              geminiResponse.body,
+              geminiResponse.status,
+              geminiResponse.model,
+            ) ||
             "A IA não conseguiu analisar os dados do relatório.",
         },
         geminiResponse.status === 429 ? 429 : 502,
@@ -143,7 +155,10 @@ Deno.serve(async (request) => {
     try {
       parsed = JSON.parse(stripJsonFences(outputText));
     } catch {
-      console.error("Invalid Gemini JSON", outputText);
+      console.error("Invalid Gemini JSON", {
+        model: geminiResponse.model,
+        responseLength: outputText.length,
+      });
       return jsonResponse(
         { mensagem: "A IA retornou uma resposta inválida." },
         502,
@@ -303,7 +318,139 @@ async function callGemini(input: {
   apiKey: string;
   model: string;
   prompt: string;
-}): Promise<{ ok: boolean; status: number; body: any }> {
+}): Promise<{ ok: boolean; status: number; body: any; model: string }> {
+  const deadline = Date.now() + GEMINI_TOTAL_TIMEOUT_MS;
+  const modelos = [
+    input.model,
+    cleanString(Deno.env.get("GEMINI_FALLBACK_MODEL")),
+  ].filter(
+    (model, index, all) =>
+      model &&
+      all.indexOf(model) === index &&
+      (index === 0 || isCurrentGeminiModel(model)),
+  );
+
+  let ultimaResposta: {
+    ok: boolean;
+    status: number;
+    body: any;
+    model: string;
+  } = {
+    ok: false,
+    status: 503,
+    body: { error: { message: "O serviço de IA não respondeu a tempo." } },
+    model: input.model,
+  };
+
+  for (const model of modelos) {
+    const resposta = await callGeminiComRetry({
+      ...input,
+      model,
+      deadline,
+    });
+    ultimaResposta = resposta;
+
+    if (
+      resposta.ok ||
+      (!isTransientGeminiStatus(resposta.status) &&
+        !isModelUnavailableResponse(resposta))
+    ) {
+      return resposta;
+    }
+
+    if (Date.now() >= deadline) break;
+
+    console.warn(
+      "Gemini model unavailable; trying next configured model",
+      model,
+      resposta.status,
+    );
+  }
+
+  return ultimaResposta;
+}
+
+async function callGeminiComRetry(input: {
+  apiKey: string;
+  model: string;
+  prompt: string;
+  deadline: number;
+}): Promise<{ ok: boolean; status: number; body: any; model: string }> {
+  let resposta: { ok: boolean; status: number; body: any; model: string };
+
+  for (let tentativa = 0; ; tentativa++) {
+    const tempoRestante = input.deadline - Date.now();
+    if (tempoRestante <= 0) {
+      return {
+        ok: false,
+        status: 504,
+        body: {
+          error: { message: "O serviço de IA demorou demais para responder." },
+        },
+        model: input.model,
+      };
+    }
+
+    try {
+      resposta = await callGeminiUmaVez({
+        ...input,
+        timeoutMs: Math.min(GEMINI_TIMEOUT_MS, tempoRestante),
+      });
+    } catch (error) {
+      const nomeErro = error instanceof Error ? error.name : "";
+      const mensagemErro = error instanceof Error ? error.message : "";
+      const abortado = nomeErro === "AbortError" || nomeErro === "TimeoutError";
+      resposta = {
+        ok: false,
+        status: abortado ? 504 : 503,
+        body: {
+          error: {
+            message: abortado
+              ? "O serviço de IA demorou demais para responder."
+              : "Não foi possível alcançar o serviço de IA.",
+          },
+        },
+        model: input.model,
+      };
+      console.warn("Gemini request failed", {
+        model: input.model,
+        error: nomeErro || "Error",
+        message: mensagemErro.slice(0, 200),
+      });
+    }
+
+    if (
+      resposta.ok ||
+      !isTransientGeminiStatus(resposta.status) ||
+      tentativa >= GEMINI_RETRY_DELAYS_MS.length
+    ) {
+      return resposta;
+    }
+
+    const atrasoBase = GEMINI_RETRY_DELAYS_MS[tentativa];
+    const atraso = Math.min(
+      atrasoBase + Math.floor(Math.random() * 500),
+      input.deadline - Date.now(),
+    );
+    if (atraso <= 0) return resposta;
+
+    console.warn(
+      "Transient Gemini error; retrying",
+      input.model,
+      resposta.status,
+      `attempt=${tentativa + 1}`,
+      `delayMs=${atraso}`,
+    );
+    await delay(atraso);
+  }
+}
+
+async function callGeminiUmaVez(input: {
+  apiKey: string;
+  model: string;
+  prompt: string;
+  timeoutMs: number;
+}): Promise<{ ok: boolean; status: number; body: any; model: string }> {
   const endpoint =
     `https://generativelanguage.googleapis.com/v1beta/models/${input.model}:generateContent`;
 
@@ -322,7 +469,7 @@ async function callGemini(input: {
   let response = await fetch(endpoint, {
     method: "POST",
     headers,
-    signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+    signal: AbortSignal.timeout(input.timeoutMs),
     body: JSON.stringify({
       contents: [{ role: "user", parts: [{ text: input.prompt }] }],
       generationConfig: legacyConfig,
@@ -339,7 +486,7 @@ async function callGemini(input: {
     response = await fetch(endpoint, {
       method: "POST",
       headers,
-      signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      signal: AbortSignal.timeout(input.timeoutMs),
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: input.prompt }] }],
         generationConfig: {
@@ -358,7 +505,47 @@ async function callGemini(input: {
     responseBody = await safeJson(response);
   }
 
-  return { ok: response.ok, status: response.status, body: responseBody };
+  return {
+    ok: response.ok,
+    status: response.status,
+    body: responseBody,
+    model: input.model,
+  };
+}
+
+function isTransientGeminiStatus(status: number): boolean {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
+
+function isModelUnavailableResponse(response: {
+  status: number;
+  body: any;
+}): boolean {
+  if (response.status === 404) return true;
+  if (response.status !== 400) return false;
+
+  const message = cleanString(
+    response.body?.error?.message || response.body?.message,
+  ).toLowerCase();
+
+  return (
+    isStructuredOutputFieldError(response.body) ||
+    (message.includes("model") &&
+      (message.includes("not found") ||
+        message.includes("not support") ||
+        message.includes("unsupported") ||
+        message.includes("unavailable")))
+  );
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isCurrentGeminiModel(model: string): boolean {
+  // Não reutiliza um fallback antigo (por exemplo, Gemini 2.5) que pode
+  // estar salvo no segredo do projeto e já não ser aceito pelo provedor.
+  return /^gemini-3\./i.test(model);
 }
 
 function normalizeInsights(value: unknown): Record<string, unknown> {
@@ -425,8 +612,24 @@ function extractGeminiText(body: any): string | null {
   return text || null;
 }
 
-function extractGeminiError(body: any): string | null {
+function extractGeminiError(
+  body: any,
+  status: number,
+  model = GEMINI_MODEL,
+): string | null {
   const message = cleanString(body?.error?.message);
+  if (status === 404) {
+    return `O modelo de IA configurado (${model}) não está disponível.`;
+  }
+  if (status === 429) {
+    return "A IA está temporariamente sobrecarregada. Tente novamente em alguns instantes.";
+  }
+  if (status >= 500 && status <= 599) {
+    return "O serviço de IA está temporariamente indisponível. Tente novamente em alguns instantes.";
+  }
+  if (status === 504) {
+    return "A análise demorou mais que o limite seguro. Tente um arquivo menor ou novamente em instantes.";
+  }
   return message || null;
 }
 

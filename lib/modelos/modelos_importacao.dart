@@ -219,13 +219,15 @@ class ConvidadoPreviaImportacao {
     final descricao = _textoOpcional(json['descricao']);
 
     return ConvidadoPreviaImportacao(
-      nome: _texto(json['nome'], fallback: 'Nome não identificado'),
+      // Mantém vazio quando a IA não reconheceu o nome para que a validação
+      // impeça a publicação sem revisão manual.
+      nome: _texto(json['nome']),
       descricao: descricao,
       whatsapp: _textoOpcional(json['whatsapp']),
       categoria: CategoriaConvidado.fromJson(json['categoria']),
       confianca: _numero(
         json['confianca'],
-        fallback: 1,
+        fallback: 0,
       ).clamp(0.0, 1.0).toDouble(),
     );
   }

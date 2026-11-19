@@ -14,6 +14,9 @@
     h1 { margin:28px 0 12px; font-size:27px; line-height:1.15; }
     p { color:var(--muted); line-height:1.55; }
     a { display:inline-block; margin-top:18px; padding:15px 22px; border-radius:14px; color:#fff; background:var(--coral); font-size:16px; font-weight:700; text-decoration:none; }
+    .acoes { display:grid; gap:10px; margin-top:20px; }
+    .acoes a { margin:0; }
+    .web { color:var(--coral-dark); background:#fff; border:1px solid #e8a99b; }
     .observacao { margin-top:22px; font-size:13px; }
     [hidden] { display:none; }
   </style>
@@ -22,25 +25,44 @@
   <main>
     <div class="marca">ConfirmaAi</div>
     <h1>Você recebeu um convite para a equipe</h1>
-    <p id="mensagem">Toque no botão abaixo para abrir o convite no aplicativo ConfirmaAi.</p>
-    <a id="abrir" href="#">Abrir no ConfirmaAi</a>
-    <p class="observacao">Se o aplicativo ainda não estiver instalado, instale-o e abra este link novamente.</p>
+    <p id="mensagem">Abrindo seu convite no ConfirmaAi...</p>
+    <div class="acoes" id="acoes">
+      <a id="abrir" href="#">Abrir no aplicativo</a>
+      <a class="web" id="web" href="#">Continuar pelo navegador</a>
+    </div>
+    <p class="observacao">Se o aplicativo não estiver instalado, o convite continuará no app web.</p>
   </main>
   <script>
     const parametros = new URLSearchParams(location.search);
     const token = (parametros.get('token') || '').trim();
     const botao = document.getElementById('abrir');
+    const botaoWeb = document.getElementById('web');
+    const acoes = document.getElementById('acoes');
     const mensagem = document.getElementById('mensagem');
 
     if (!token) {
-      botao.hidden = true;
+      acoes.hidden = true;
       mensagem.textContent = 'Este convite está incompleto. Peça um novo link ao responsável pelo evento.';
     } else {
       const linkApp = `br.com.appcasamento://convite-funcionario?token=${encodeURIComponent(token)}`;
+      const linkWeb = `https://confirmaaiweb.netlify.app/app/?token=${encodeURIComponent(token)}`;
       botao.href = linkApp;
+      botaoWeb.href = linkWeb;
 
-      if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-        window.setTimeout(() => { window.location.href = linkApp; }, 450);
+      const celular = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      if (!celular) {
+        window.location.replace(linkWeb);
+      } else {
+        let aplicativoAberto = false;
+        const marcarAplicativoAberto = () => { aplicativoAberto = true; };
+        document.addEventListener('visibilitychange', () => {
+          if (document.hidden) marcarAplicativoAberto();
+        }, { once: true });
+        window.addEventListener('pagehide', marcarAplicativoAberto, { once: true });
+        window.setTimeout(() => {
+          if (!aplicativoAberto && !document.hidden) window.location.replace(linkWeb);
+        }, 1400);
+        window.location.href = linkApp;
       }
     }
   </script>

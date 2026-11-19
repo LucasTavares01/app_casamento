@@ -285,7 +285,16 @@ class SincronizacoesLocais extends Table {
   ],
 )
 class BancoLocal extends _$BancoLocal {
-  BancoLocal() : super(driftDatabase(name: 'app_casamento_offline'));
+  BancoLocal()
+      : super(
+          driftDatabase(
+            name: 'app_casamento_offline',
+            web: DriftWebOptions(
+              sqlite3Wasm: Uri.parse('sqlite3.wasm'),
+              driftWorker: Uri.parse('drift_worker.js'),
+            ),
+          ),
+        );
 
   @override
   int get schemaVersion => 2;

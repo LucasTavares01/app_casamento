@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:app_links/app_links.dart';
 
 import '../banco/banco_instancia.dart';
@@ -32,6 +33,14 @@ class ConviteFuncionarioLinkServico {
         .getSingleOrNull();
     _tokenPendente = local?.valor.trim();
 
+    if (kIsWeb) {
+      try {
+        await _processar(Uri.base);
+      } catch (_) {
+        // A URL inicial pode não conter um convite.
+      }
+    }
+
     try {
       final inicial = await _appLinks.getInitialLink();
       if (inicial != null) await _processar(inicial);
@@ -49,8 +58,11 @@ class ConviteFuncionarioLinkServico {
     final ehLinkInterno = uri.scheme == 'br.com.appcasamento' &&
         uri.host == 'convite-funcionario';
     final ehLinkWeb = uri.scheme == 'https' &&
-        uri.host == 'confirmaai-convites.netlify.app' &&
-        uri.path.startsWith('/convite-funcionario');
+        (uri.host == 'confirmaai-convites.netlify.app' ||
+            uri.host == 'confirmaaiweb.netlify.app') &&
+        (uri.path.startsWith('/convite-funcionario') ||
+            (uri.host == 'confirmaaiweb.netlify.app' &&
+                uri.path.startsWith('/app')));
 
     if (!ehLinkInterno && !ehLinkWeb) {
       return;

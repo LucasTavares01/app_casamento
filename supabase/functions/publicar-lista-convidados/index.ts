@@ -179,7 +179,43 @@ function validatePreview(value: Record<string, unknown>): {
       };
     }
 
+    const convidadosInvalidos = rawTable.convidados.filter((guest) => {
+      if (!isPlainObject(guest)) {
+        return true;
+      }
+      const nome = cleanString(guest.nome).toLowerCase();
+      return (
+        nome.length === 0 ||
+        nome === "nome não identificado" ||
+        nome === "nome nao identificado"
+      );
+    });
+    if (convidadosInvalidos.length > 0) {
+      return {
+        valid: false,
+        message: `A Mesa ${number} possui convidado(s) sem nome reconhecido. Revise a prévia antes de publicar.`,
+      };
+    }
+
     guestCount += rawTable.convidados.length;
+  }
+
+  const convidadosSemMesaInvalidos = semMesa.filter((guest) => {
+    if (!isPlainObject(guest)) {
+      return true;
+    }
+    const nome = cleanString(guest.nome).toLowerCase();
+    return (
+      nome.length === 0 ||
+      nome === "nome não identificado" ||
+      nome === "nome nao identificado"
+    );
+  });
+  if (convidadosSemMesaInvalidos.length > 0) {
+    return {
+      valid: false,
+      message: "Há convidado(s) sem nome reconhecido. Revise a prévia antes de publicar.",
+    };
   }
 
   if (guestCount === 0) {
