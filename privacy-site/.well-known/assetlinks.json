@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "br.com.tavarel.confirmaai",
+      "sha256_cert_fingerprints": [
+        "C1:7F:52:5D:F6:6F:86:78:47:30:50:B0:53:69:C3:D0:03:3E:19:AA:A1:6D:7D:6A:90:A3:90:78:20:92:D3:5E"
+      ]
+    }
+  }
+]
